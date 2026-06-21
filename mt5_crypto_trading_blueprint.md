@@ -50,12 +50,6 @@ Primary sources used:
 
 If an external source conflicts with local files, the local files win.
 
-### Important Source Conflict
-
-The prompt asks for "Pythonic", but `information.md` lists **Pydantic** and Pydantic Logfire credits. `doubleword.md` also states that real-time and async Doubleword usage for the hackathon runs through the **Pydantic AI Gateway / Logfire**.
-
-Assumption: "Pythonic" means **Pydantic / Pydantic AI / Pydantic Logfire**. If "Pythonic" is a separate sponsor or tool, this needs organizer verification.
-
 ### Competition Assumptions
 
 | Area | Working Assumption |
@@ -134,6 +128,7 @@ Implication: the bot must pursue return, but not by risking forced liquidation o
 
 ### Risk Discipline Penalties
 
+Avoid at all costs:
 | Risk Area | Penalty Trigger |
 | --- | --- |
 | Margin usage | `>90%` for at least 30 min: -20 |
@@ -1136,8 +1131,6 @@ Best use in this project:
 - Do not put Doubleword directly in the live order path for MVP.
 
 ### Pydantic / Pydantic AI / Logfire
-
-Assumed replacement for "Pythonic".
 
 Best use:
 
