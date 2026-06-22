@@ -548,10 +548,10 @@ def _position_snapshot_from_mt5(
         ticket=_as_optional_int(data.get("ticket")),
         side=side,
         volume=_as_float(data.get("volume")),
-        price_open=_as_optional_float(data.get("price_open")),
-        price_current=_as_optional_float(data.get("price_current")),
-        stop_loss=_as_optional_float(data.get("sl")),
-        take_profit=_as_optional_float(data.get("tp")),
+        price_open=_positive_or_none(data.get("price_open")),
+        price_current=_positive_or_none(data.get("price_current")),
+        stop_loss=_positive_or_none(data.get("sl")),
+        take_profit=_positive_or_none(data.get("tp")),
         profit=_as_float(data.get("profit")),
         raw=data,
     )
@@ -710,6 +710,18 @@ def _as_optional_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     if number != number:
+        return None
+    return number
+
+
+def _positive_or_none(value: Any) -> float | None:
+    """Treat MT5's 0.0 'unset' sentinel (and non-positive values) as absent.
+
+    MT5 reports sl/tp (and occasionally prices) as 0.0 when not set, but the
+    PositionSnapshot schema requires those fields to be > 0 when present.
+    """
+    number = _as_optional_float(value)
+    if number is None or number <= 0:
         return None
     return number
 

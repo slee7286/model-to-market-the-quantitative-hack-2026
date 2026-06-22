@@ -89,6 +89,8 @@ def context(
     positions: tuple[PositionRiskState, ...] = tuple(),
     markets: dict[str, MarketRiskState] | None = None,
     kill_switch: bool = False,
+    single_breach_seconds: float = 0.0,
+    net_breach_seconds: float = 0.0,
 ) -> RiskContext:
     return RiskContext(
         account=acct or account(),
@@ -97,6 +99,8 @@ def context(
         market=markets or {"BTC/USD": market("BTC/USD")},
         now_utc=NOW,
         kill_switch_active=kill_switch,
+        single_instrument_breach_seconds=single_breach_seconds,
+        net_directional_breach_seconds=net_breach_seconds,
     )
 
 
@@ -205,25 +209,48 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.passed)
         self.assertIn("margin usage", decision.risk_check.reason or "")
 
-    def test_single_instrument_concentration_blocks_trade(self) -> None:
-        btc_volume = 0.80 * EQUITY / 100.04
+    def test_single_instrument_concentration_blocks_after_soft_limit(self) -> None:
+        # Lone dominant BTC position keeps single-instrument exposure > 90%; once
+        # the breach is older than the soft limit, new exposure is blocked.
+        btc_volume = 1.00 * EQUITY / 100.04
         decision = RiskEngine().check_order_intent(
             intent(volume=round(btc_volume, 2)),
-            context(positions=(position("ETH/USD", PositionSide.LONG, 0.25),)),
+            context(
+                positions=(position("ETH/USD", PositionSide.SHORT, 0.05),),
+                single_breach_seconds=16 * 60,
+            ),
         )
 
         self.assertFalse(decision.passed)
         self.assertIn("single-instrument exposure", decision.risk_check.reason or "")
 
-    def test_net_directional_exposure_blocks_trade(self) -> None:
+    def test_net_directional_exposure_blocks_after_soft_limit(self) -> None:
         btc_volume = 0.70 * EQUITY / 100.04
         decision = RiskEngine().check_order_intent(
             intent(volume=round(btc_volume, 2)),
-            context(positions=(position("ETH/USD", PositionSide.LONG, 0.40),)),
+            context(
+                positions=(position("ETH/USD", PositionSide.LONG, 0.40),),
+                net_breach_seconds=16 * 60,
+            ),
         )
 
         self.assertFalse(decision.passed)
         self.assertIn("net directional exposure", decision.risk_check.reason or "")
+
+    def test_concentration_breach_within_soft_window_is_allowed(self) -> None:
+        # Same over-concentrated order, but the breach is younger than the soft
+        # limit, so it is allowed (no auto-reject).
+        btc_volume = 1.00 * EQUITY / 100.04
+        decision = RiskEngine().check_order_intent(
+            intent(volume=round(btc_volume, 2)),
+            context(
+                positions=(position("ETH/USD", PositionSide.SHORT, 0.05),),
+                single_breach_seconds=60.0,
+            ),
+        )
+
+        self.assertTrue(decision.passed)
+        self.assertIsNotNone(decision.approved_order)
 
     def test_drawdown_blocks_new_risk(self) -> None:
         decision = RiskEngine().check_order_intent(

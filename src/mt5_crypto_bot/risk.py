@@ -12,7 +12,7 @@ import math
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -66,8 +66,12 @@ class RiskLimits:
     max_gross_leverage: float = 8.0
     max_symbol_leverage: float = 2.0
     max_margin_usage: float = 0.60
-    max_single_instrument_share: float = 0.75
-    max_net_directional_share: float = 0.85
+    # Concentration / net-direction are no longer hard-rejected. They trigger the
+    # rules.md penalty only when sustained > 30 min, so we allow a breach of the
+    # rules thresholds for up to a soft time window, then stop adding exposure.
+    max_single_instrument_share: float = 0.90
+    max_net_directional_share: float = 0.95
+    concentration_soft_limit_seconds: float = 15 * 60.0
     no_new_risk_drawdown: float = 0.08
     hard_drawdown: float = 0.10
     tick_stale_seconds: float = 120.0
@@ -199,6 +203,10 @@ class RiskContext:
     market: Mapping[str, MarketRiskState | Mapping[str, Any]] = field(default_factory=dict)
     now_utc: datetime | None = None
     kill_switch_active: bool = False
+    # How long the actual portfolio has continuously breached the concentration /
+    # net-directional thresholds (seconds). Drives the soft time limit.
+    single_instrument_breach_seconds: float = 0.0
+    net_directional_breach_seconds: float = 0.0
 
     def account_state(self) -> AccountRiskState | None:
         if self.account is None:
@@ -506,7 +514,16 @@ class RiskEngine:
             reasons.append("block: no-new-risk drawdown guard")
 
         if projected_metrics is not None:
-            reasons.extend(_portfolio_cap_reasons(projected_metrics, symbol, self.limits, risk_reducing))
+            reasons.extend(
+                _portfolio_cap_reasons(
+                    projected_metrics,
+                    symbol,
+                    self.limits,
+                    risk_reducing,
+                    single_breach_seconds=context.single_instrument_breach_seconds,
+                    net_directional_breach_seconds=context.net_directional_breach_seconds,
+                )
+            )
 
         if metadata is not None and market is not None and order_price is not None:
             reasons.extend(_stop_distance_reasons(intent, metadata, market, order_price, risk_reducing))
@@ -552,11 +569,16 @@ def load_risk_context_from_store(
 ) -> RiskContext:
     """Build current risk state from the local SQLite audit store."""
     symbols = normalize_symbols(target_symbols)
+    limits = RiskLimits()
+    now = _datetime_from_any(now_utc) if now_utc is not None else _utc_now()
     with SQLiteStore(database_url) as store:
         account = _latest_account_from_store(store)
         metadata = _metadata_from_store(store, symbols)
         positions = _latest_positions_from_store(store, symbols)
         market = _latest_market_from_store(store, symbols)
+        single_breach, net_breach = _exposure_breach_durations(
+            store, metadata=metadata, account=account, limits=limits, now=now
+        )
     return RiskContext(
         account=account,
         symbol_metadata=metadata,
@@ -564,7 +586,94 @@ def load_risk_context_from_store(
         market=market,
         now_utc=now_utc,
         kill_switch_active=read_kill_switch(kill_switch_file),
+        single_instrument_breach_seconds=single_breach,
+        net_directional_breach_seconds=net_breach,
     )
+
+
+def _exposure_breach_durations(
+    store: SQLiteStore,
+    *,
+    metadata: Mapping[str, SymbolConfig],
+    account: AccountRiskState | None,
+    limits: RiskLimits,
+    now: datetime,
+) -> tuple[float, float]:
+    """Return how long (seconds) single-instrument and net-directional exposure
+    have *continuously* breached their thresholds, from stored position snapshots.
+
+    Equity is approximated by the latest account equity across the window, which
+    is adequate for a short (sub-hour) breach timer.
+    """
+    if account is None or account.equity <= 0:
+        return 0.0, 0.0
+    lookback = limits.concentration_soft_limit_seconds + 600.0
+    cutoff = now - timedelta(seconds=lookback)
+    rows = store.fetch_all(
+        """
+        SELECT observed_at_utc, symbol, side, volume, price_current, price_open
+        FROM positions_snapshots
+        WHERE observed_at_utc >= ?
+        ORDER BY observed_at_utc
+        """,
+        (cutoff.isoformat(),),
+    )
+    if not rows:
+        return 0.0, 0.0
+
+    snapshots: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        snapshots.setdefault(str(row["observed_at_utc"]), []).append(row)
+    times = list(snapshots.keys())
+    latest = _datetime_from_any(times[-1])
+
+    def shares_at(snapshot_rows: list[Mapping[str, Any]]) -> tuple[float, float, float]:
+        notionals = {sym: 0.0 for sym in ALLOWED_SYMBOLS}
+        for row in snapshot_rows:
+            try:
+                sym = normalize_symbol(row["symbol"])
+            except (TypeError, ValueError):
+                continue
+            volume = _as_float(row["volume"])
+            if volume <= 0:
+                continue
+            md = metadata.get(sym)
+            contract_size = md.trade_contract_size if md is not None else None
+            if contract_size is None or contract_size <= 0:
+                continue
+            price = _as_optional_float(row["price_current"]) or _as_optional_float(row["price_open"])
+            if price is None or price <= 0:
+                continue
+            side = str(row["side"] or "").lower()
+            sign = 1.0 if side == "long" else -1.0 if side == "short" else 0.0
+            notionals[sym] += sign * volume * price * contract_size
+        gross = sum(abs(value) for value in notionals.values())
+        gross_leverage = gross / account.equity if account.equity > 0 else 0.0
+        if gross <= EPSILON:
+            return gross_leverage, 0.0, 0.0
+        single = max(abs(value) for value in notionals.values()) / gross
+        net = abs(sum(notionals.values())) / gross
+        return gross_leverage, single, net
+
+    single_seconds = 0.0
+    net_seconds = 0.0
+    single_run = True
+    net_run = True
+    for observed_at in reversed(times):
+        gross_leverage, single_share, net_share = shares_at(snapshots[observed_at])
+        elapsed = (latest - _datetime_from_any(observed_at)).total_seconds()
+        breaching = gross_leverage >= limits.concentration_min_gross_leverage
+        if single_run and breaching and single_share > limits.max_single_instrument_share + EPSILON:
+            single_seconds = elapsed
+        else:
+            single_run = False
+        if net_run and breaching and net_share > limits.max_net_directional_share + EPSILON:
+            net_seconds = elapsed
+        else:
+            net_run = False
+        if not single_run and not net_run:
+            break
+    return single_seconds, net_seconds
 
 
 def read_kill_switch(path: str | Path | None = Path("config/KILL_SWITCH")) -> bool:
@@ -934,6 +1043,9 @@ def _portfolio_cap_reasons(
     symbol: str,
     limits: RiskLimits,
     risk_reducing: bool,
+    *,
+    single_breach_seconds: float = 0.0,
+    net_directional_breach_seconds: float = 0.0,
 ) -> list[str]:
     reasons: list[str] = []
     if risk_reducing:
@@ -945,16 +1057,28 @@ def _portfolio_cap_reasons(
         reasons.append("block: projected per-symbol leverage exceeds internal cap")
     if metrics.margin_usage > limits.max_margin_usage + EPSILON:
         reasons.append("block: projected margin usage exceeds internal cap")
+    # Concentration / net-direction are soft, time-bounded limits: a breach of the
+    # rules thresholds is allowed until it has been sustained past the soft window,
+    # after which new exposure-increasing orders that keep us over are blocked.
+    soft_limit = limits.concentration_soft_limit_seconds
     if (
         metrics.gross_leverage >= limits.concentration_min_gross_leverage
         and metrics.single_instrument_exposure > limits.max_single_instrument_share + EPSILON
+        and single_breach_seconds >= soft_limit
     ):
-        reasons.append("block: projected single-instrument exposure exceeds internal cap")
+        reasons.append(
+            "block: single-instrument exposure has breached the rules threshold "
+            "past the soft time limit; not adding exposure"
+        )
     if (
         metrics.gross_leverage >= limits.concentration_min_gross_leverage
         and metrics.net_directional_exposure > limits.max_net_directional_share + EPSILON
+        and net_directional_breach_seconds >= soft_limit
     ):
-        reasons.append("block: projected net directional exposure exceeds internal cap")
+        reasons.append(
+            "block: net directional exposure has breached the rules threshold "
+            "past the soft time limit; not adding exposure"
+        )
     return reasons
 
 

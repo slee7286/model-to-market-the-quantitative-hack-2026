@@ -326,6 +326,11 @@ def _execute_live_approved_orders(
             initialize_mt5(credentials, mt5)
             initialized = True
             login_mt5(credentials, mt5)
+        # MT5 requires the symbol selected in Market Watch before order_check;
+        # otherwise order_check returns None and the order is treated as rejected.
+        if hasattr(mt5, "symbol_select"):
+            for broker_symbol in symbol_map.values():
+                mt5.symbol_select(broker_symbol, True)
         with SQLiteStore(database_url) as store:
             execution_result = ExecutionEngine(
                 config=config,
