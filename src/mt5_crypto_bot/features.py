@@ -137,6 +137,7 @@ def compute_feature_snapshots_from_store(
     target_symbols: Sequence[str] | str | None = ALLOWED_SYMBOLS,
     config: FeatureConfig | None = None,
     require_data: bool = True,
+    now_utc: datetime | None = None,
 ) -> pd.DataFrame:
     """Load stored market data from SQLite and compute feature snapshots."""
     database_path = parse_sqlite_path(database_url)
@@ -187,6 +188,7 @@ def compute_feature_snapshots_from_store(
         order_book_snapshots=[dict(row) for row in order_book],
         target_symbols=symbols,
         config=config,
+        now_utc=now_utc,
     )
 
 
@@ -511,6 +513,7 @@ def _attach_tick_features(
     output = features.copy()
     tick_frame = _ticks_to_frame(ticks, symbols)
     tick_columns = ("tick_time_utc", "bid", "ask", "last", "spread", "spread_bps")
+    output = output.drop(columns=[column for column in tick_columns if column in output], errors="ignore")
     if tick_frame.empty:
         for column in tick_columns:
             output[column] = np.nan

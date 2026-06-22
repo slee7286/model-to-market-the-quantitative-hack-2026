@@ -10,11 +10,11 @@ The project is constrained to the allowed crypto instruments from `rules.md`:
 - `SOL/USD`
 - `XRP/USD`
 
-Live trading is not enabled in this scaffold. All execution work defaults to `dry_run` until a separate future live-approval workflow is implemented and explicitly approved.
+Live trading is not enabled in this scaffold. Execution records dry-run results only unless a separate future live-approval workflow is implemented and explicitly approved.
 
 ## Current Scope
 
-The project currently includes the dry-run-first package scaffold, typed configuration and schemas, a read-only MT5 connection verification script, read-only symbol discovery/metadata bootstrap, local SQLite storage, and a read-only market data collector. It intentionally does not implement order construction, execution, or live trading.
+The project currently includes the dry-run-first package scaffold, typed configuration and schemas, a read-only MT5 connection verification script, read-only symbol discovery/metadata bootstrap, local SQLite storage, a read-only market data collector, deterministic feature engineering, an offline backtester, a dry-run strategy engine, a pre-trade risk engine, and a dry-run execution engine. It intentionally does not enable live trading.
 
 ## Setup
 
@@ -190,6 +190,176 @@ below the `rules.md` API-abuse safe harbor. With all five symbols enabled, the
 default cycle is tens of MT5 read-only calls every five seconds, far below 500
 requests per second.
 
+## Feature Snapshots And Backtests
+
+Export feature snapshots from the local SQLite store:
+
+```powershell
+python scripts/export_feature_snapshots.py --latest-only
+```
+
+Run the offline backtester on collected local data:
+
+```powershell
+python scripts/backtest.py
+```
+
+If no local market database or organizer CSV history is available, run a clearly
+marked synthetic fixture smoke test:
+
+```powershell
+python scripts/backtest.py --fixture
+```
+
+The backtester never connects to MT5 and never places orders. It compares the
+frozen MVP strategy (`momo_v1`) against volatility-managed momentum, Donchian
+trend ensemble, and intraday reversal challengers. Reports are written under
+`reports/backtests/` and include return, max drawdown, non-annualized 15-minute
+Sharpe approximation, trade count, exposure, turnover, estimated spread/slippage
+costs, symbol PnL, and side PnL.
+
+Fixture reports validate mechanics only and are not live-trading evidence.
+Challengers remain shadow candidates until real backtest and dry-run evidence
+are reviewed in a future human-approved workflow.
+
+## Dry-Run Strategy Engine
+
+After symbol metadata and market data have been collected into the local SQLite
+store, run one dry-run strategy cycle:
+
+```powershell
+python scripts/run_strategy_once.py
+```
+
+The strategy script:
+
+- computes latest M5 feature snapshots from stored bars, ticks, and optional depth;
+- applies the frozen `momo_v1` thresholds, BTC regime gates, spread caps, shock
+  filter, stale-data gates, and volatility-scaled target leverage;
+- stores every generated `Signal` in SQLite with `strategy_version` and full
+  feature JSON;
+- returns only in-memory `OrderIntent` objects for possible later risk checks;
+- never imports MT5, never contacts MT5, and never places orders.
+
+Useful offline options:
+
+```powershell
+python scripts/run_strategy_once.py --symbols BTC/USD,ETH/USD
+python scripts/run_strategy_once.py --all-snapshots --no-freshness-check
+```
+
+`--no-freshness-check` is for offline fixture inspection only. Normal dry-run use
+should keep freshness checks enabled so stale bars or ticks produce `BLOCK`
+signals rather than entry intents.
+
+## Risk Engine
+
+Raw strategy `OrderIntent` objects are not execution-approved. Pass them through
+the risk engine first:
+
+```python
+from mt5_crypto_bot.risk import RiskEngine, load_risk_context_from_store
+
+context = load_risk_context_from_store("sqlite:///data/trading.db")
+result = RiskEngine().check_order_intents(order_intents, context, store=store)
+approved_orders = result.approved_orders
+```
+
+The risk engine stores every `RiskCheck` in SQLite and blocks missing or unsafe
+state by default. It checks:
+
+- allowed crypto symbols only;
+- stale ticks and stale strategy feature timestamps;
+- spread bps against the frozen symbol caps;
+- gross leverage, per-symbol leverage, margin usage, concentration, and net
+  directional exposure;
+- drawdown no-new-risk and hard guards;
+- minimum stop distance;
+- broker volume min/max/step;
+- local kill switch state.
+
+Internal caps are stricter than `rules.md` penalty zones: 8x gross leverage, 60%
+margin usage, 75% single-instrument exposure, 85% net directional exposure, and
+no-new-risk behavior from 8% drawdown.
+
+Print current MT5 account and risk state with read-only MT5 calls:
+
+```powershell
+python scripts/print_risk_state.py
+```
+
+This command reads account info, positions, symbol metadata, and latest ticks.
+It does not call `order_check`, does not call `order_send`, and still requires
+`TRADE_MODE=dry_run`.
+
+## Dry-Run Execution Engine
+
+Execution accepts only risk-approved orders. The normal boundary is the
+`RiskApprovedOrder` object returned by the risk engine:
+
+```python
+from mt5_crypto_bot.execution import ExecutionEngine
+
+execution = ExecutionEngine()
+result = execution.execute_approved_order(approved_order, store=store)
+```
+
+In `dry_run`, the engine:
+
+- persists the approved `OrderIntent` in SQLite;
+- builds and stores the future MT5 request payload for auditability;
+- records an `ExecutionResult` with status `dry_run`;
+- sets filled volume to zero;
+- does not call MT5 `order_check`;
+- does not call MT5 `order_send`.
+
+The module also contains request-building helpers for a future live workflow and
+read-only reconciliation helpers for `positions_get` and `history_deals_get`.
+Any future live submission path is guarded by both `TRADE_MODE=live` and a
+separate approval artifact such as `config/LIVE_APPROVED.json`; this repository
+does not create that file, and the current `BotConfig` rejects live mode in the
+non-live build.
+
+## End-To-End Dry Run
+
+Run one full dry-run bot cycle:
+
+```powershell
+python scripts/run_bot_dry_run.py --once
+```
+
+Run a bounded dry-run session:
+
+```powershell
+python scripts/run_bot_dry_run.py --minutes 30 --poll-seconds 15
+```
+
+Each cycle attempts read-only MT5 market/account collection when a confirmed
+`config/symbol_map.json` and local MT5 setup are available. If MT5 setup is
+missing, it falls back safely: first to existing stored data, then to a clearly
+labelled synthetic fixture for offline smoke validation. The fallback exists so
+the full audit path can still be tested without credentials or live access.
+
+The end-to-end runner:
+
+- collects latest read-only market, account, and position state where available;
+- computes completed-M5 feature snapshots;
+- stores `Signal` rows from `momo_v1`;
+- creates strategy `OrderIntent` objects only in memory;
+- stores mandatory `RiskCheck` decisions;
+- records risk-approved orders as `dry_run` execution rows in SQLite;
+- does not call MT5 `order_check`;
+- does not call MT5 `order_send`.
+
+For a deterministic offline smoke run:
+
+```powershell
+python scripts/run_bot_dry_run.py --once --fixture
+```
+
+Use `--no-fixture-fallback` when you want missing MT5 setup or missing symbol
+mapping to fail instead of using the non-live fixture fallback.
+
 ## Project Layout
 
 ```text
@@ -203,6 +373,7 @@ src/mt5_crypto_bot/
   symbols.py
   storage.py
   data_collector.py
+  dry_run.py
   features.py
   strategy.py
   risk.py
@@ -215,13 +386,23 @@ scripts/
   verify_mt5_connection.py
   bootstrap_symbols.py
   run_data_collector.py
+  export_feature_snapshots.py
+  backtest.py
+  run_strategy_once.py
+  run_bot_dry_run.py
+  print_risk_state.py
 tests/
   test_package_import.py
+  test_features.py
+  test_backtest.py
+  test_strategy.py
+  test_risk.py
+  test_execution.py
 ```
 
 Later prompts will fill these modules in order:
 
-1. Features, backtesting, strategy, risk, and dry-run execution.
+1. Dry-run execution.
 
 ## Safety Notes
 
