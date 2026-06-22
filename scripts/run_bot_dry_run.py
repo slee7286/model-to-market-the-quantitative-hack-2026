@@ -25,6 +25,7 @@ from mt5_crypto_bot.dry_run import (
     MIN_DRY_RUN_POLL_SECONDS,
     DryRunOrchestrationError,
     run_dry_run_session,
+    run_dry_run_settlement_once,
 )
 from mt5_crypto_bot.schemas import normalize_symbols
 from mt5_crypto_bot.symbols import DEFAULT_SYMBOL_MAP_PATH
@@ -110,6 +111,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Disable stale bar/tick gates for offline inspection only.",
     )
     parser.add_argument(
+        "--settle-at-end",
+        action="store_true",
+        help=(
+            "After the dry-run session ends, record dry-run close intents for latest known "
+            "open position snapshots. This remains dry-run only and never calls MT5 order APIs."
+        ),
+    )
+    parser.add_argument(
         "--kill-switch-file",
         default="config/KILL_SWITCH",
         help="Optional local kill-switch file. When active, risk blocks new exposure.",
@@ -154,6 +163,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             enforce_freshness=not args.no_freshness_check,
             kill_switch_file=args.kill_switch_file,
         )
+        settlement_result = (
+            run_dry_run_settlement_once(
+                args.database_url or config.database_url,
+                config=config,
+                target_symbols=symbols,
+                kill_switch_file=args.kill_switch_file,
+            )
+            if args.settle_at_end
+            else None
+        )
     except ValidationError as exc:
         print("Dry-run configuration validation failed.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
@@ -185,6 +204,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_signal_lines(results[-1])
         _print_risk_lines(results[-1])
         _print_execution_lines(results[-1])
+    if settlement_result is not None:
+        print("End-of-session settlement summary:")
+        print(json.dumps(settlement_result.summary(), indent=2, sort_keys=True))
+        _print_settlement_lines(settlement_result)
     return 0
 
 
@@ -252,6 +275,28 @@ def _print_execution_lines(result: object) -> None:
                     "message": execution.message,
                     "sent_to_mt5": execution.result.get("sent_to_mt5"),
                     "order_send_called": execution.result.get("order_send_called"),
+                },
+                sort_keys=True,
+            )
+        )
+
+
+def _print_settlement_lines(result: object) -> None:
+    intents = getattr(result, "order_intents")
+    if not intents:
+        print("No latest open positions were found for dry-run settlement.")
+        return
+    print("Settlement intents:")
+    for intent in intents:
+        print(
+            json.dumps(
+                {
+                    "client_order_id": intent.client_order_id,
+                    "symbol": intent.symbol,
+                    "side": intent.side,
+                    "requested_volume": intent.requested_volume,
+                    "requested_price": intent.requested_price,
+                    "comment": intent.comment,
                 },
                 sort_keys=True,
             )

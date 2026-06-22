@@ -25,13 +25,15 @@ class FakeMT5:
     def __init__(
         self,
         *,
-        initialize_result: bool = True,
+        initialize_result: bool | list[bool] = True,
         login_result: bool = True,
         terminal_info: object | None = None,
         account_info: object | None = None,
         last_error: tuple[object, ...] = (0, "OK"),
     ) -> None:
-        self.initialize_result = initialize_result
+        self.initialize_results = (
+            list(initialize_result) if isinstance(initialize_result, list) else [initialize_result]
+        )
         self.login_result = login_result
         self._terminal_info = terminal_info or SimpleNamespace(
             name="MetaTrader 5",
@@ -57,14 +59,37 @@ class FakeMT5:
         )
         self._last_error = last_error
         self.calls: list[str] = []
+        self.initialize_attempts: list[dict[str, object]] = []
         self.login_password: str | None = None
         self.shutdown_called = False
 
-    def initialize(self, path: str, *, timeout: int) -> bool:
+    def initialize(
+        self,
+        path: str | None = None,
+        *,
+        login: int | None = None,
+        password: str | None = None,
+        server: str | None = None,
+        timeout: int,
+    ) -> bool:
         self.calls.append("initialize")
         self.initialize_path = path
+        self.initialize_login = login
+        self.initialize_password = password
+        self.initialize_server = server
         self.initialize_timeout = timeout
-        return self.initialize_result
+        self.initialize_attempts.append(
+            {
+                "path": path,
+                "login": login,
+                "password": password,
+                "server": server,
+                "timeout": timeout,
+            }
+        )
+        if len(self.initialize_attempts) <= len(self.initialize_results):
+            return self.initialize_results[len(self.initialize_attempts) - 1]
+        return self.initialize_results[-1]
 
     def login(self, login: int, *, password: str, server: str, timeout: int) -> bool:
         self.calls.append("login")
@@ -144,6 +169,8 @@ class MT5ClientTests(unittest.TestCase):
         payload = json.dumps(snapshot.as_dict(), sort_keys=True)
         self.assertTrue(fake_mt5.shutdown_called)
         self.assertEqual(fake_mt5.calls[0], "initialize")
+        self.assertEqual(fake_mt5.initialize_attempts[0]["login"], 123456789)
+        self.assertEqual(fake_mt5.initialize_attempts[0]["server"], "Demo-Server")
         self.assertIn("terminal_info", fake_mt5.calls)
         self.assertIn("account_info", fake_mt5.calls)
         self.assertNotIn("dummy-password", payload)
@@ -166,9 +193,25 @@ class MT5ClientTests(unittest.TestCase):
             with self.assertRaises(MT5ConnectionError) as context:
                 verify_mt5_connection(make_config(terminal), mt5_module=fake_mt5)
 
-        self.assertFalse(fake_mt5.shutdown_called)
+        self.assertTrue(fake_mt5.shutdown_called)
         self.assertEqual(context.exception.last_error["code"], -10003)
         self.assertEqual(context.exception.last_error["message"], "IPC initialize failed")
+        self.assertIn("attempts", context.exception.last_error)
+
+    def test_initialize_falls_back_to_path_only_then_login(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            terminal = Path(tmpdir) / "terminal64.exe"
+            terminal.write_text("", encoding="utf-8")
+            fake_mt5 = FakeMT5(initialize_result=[False, True], last_error=(-6, "Authorization failed"))
+
+            snapshot = verify_mt5_connection(make_config(terminal), mt5_module=fake_mt5)
+
+        self.assertTrue(fake_mt5.shutdown_called)
+        self.assertEqual(len(fake_mt5.initialize_attempts), 2)
+        self.assertEqual(fake_mt5.initialize_attempts[0]["login"], 123456789)
+        self.assertIsNone(fake_mt5.initialize_attempts[1]["login"])
+        self.assertIn("login", fake_mt5.calls)
+        self.assertEqual(snapshot.account_info["server"], "Demo-Server")
 
     def test_login_failure_shuts_down_and_includes_last_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

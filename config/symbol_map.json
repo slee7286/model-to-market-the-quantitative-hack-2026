@@ -1,0 +1,213 @@
+{
+  "allowed_canonical_symbols": [
+    "BAR/USD",
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD"
+  ],
+  "canonical_to_broker": {
+    "BAR/USD": "BARUSD",
+    "BTC/USD": "BTCUSD",
+    "ETH/USD": "ETHUSD",
+    "SOL/USD": "SOLUSD",
+    "XRP/USD": "XRPUSD"
+  },
+  "generated_at_utc": "2026-06-22T16:25:41.485333+00:00",
+  "notes": [
+    "Canonical symbols must remain BAR/USD, BTC/USD, ETH/USD, SOL/USD, XRP/USD.",
+    "BAR/USD is treated as HBAR/Hedera per information.md.",
+    "Only entries with status=confirmed are eligible for metadata capture.",
+    "Ambiguous or missing entries require manual review in MT5 Market Watch."
+  ],
+  "schema_version": 1,
+  "source": "MT5 symbols_get",
+  "symbols": {
+    "BAR/USD": {
+      "broker_symbol": "BARUSD",
+      "candidates": [
+        {
+          "broker_symbol": "BARUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and USD quote",
+            "symbol text contains canonical base alias and USD",
+            "verify manually that BAR broker symbol represents HBAR/Hedera"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "BAR",
+            "currency_margin": "BAR",
+            "currency_profit": "USD",
+            "description": "BAR vs USD",
+            "digits": 5,
+            "filling_mode": 2,
+            "name": "BARUSD",
+            "path": "Game\\BARUSD",
+            "point": 1e-05,
+            "spread": 0,
+            "trade_contract_size": 100.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 0.001,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "BAR/USD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "BTC/USD": {
+      "broker_symbol": "BTCUSD",
+      "candidates": [
+        {
+          "broker_symbol": "BTCUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and USD quote",
+            "symbol text contains canonical base alias and USD"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "BTC",
+            "currency_margin": "BTC",
+            "currency_profit": "USD",
+            "description": "BTC vs USD",
+            "digits": 3,
+            "filling_mode": 2,
+            "name": "BTCUSD",
+            "path": "Game\\BTCUSD",
+            "point": 0.001,
+            "spread": 0,
+            "trade_contract_size": 1.0,
+            "trade_mode": 4,
+            "trade_tick_size": 0.001,
+            "trade_tick_value": 0.001,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "BTC/USD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "ETH/USD": {
+      "broker_symbol": "ETHUSD",
+      "candidates": [
+        {
+          "broker_symbol": "ETHUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and USD quote",
+            "symbol text contains canonical base alias and USD"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "ETH",
+            "currency_margin": "ETH",
+            "currency_profit": "USD",
+            "description": "ETH vs USD",
+            "digits": 3,
+            "filling_mode": 2,
+            "name": "ETHUSD",
+            "path": "Game\\ETHUSD",
+            "point": 0.001,
+            "spread": 0,
+            "trade_contract_size": 1.0,
+            "trade_mode": 4,
+            "trade_tick_size": 0.001,
+            "trade_tick_value": 0.001,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "ETH/USD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "SOL/USD": {
+      "broker_symbol": "SOLUSD",
+      "candidates": [
+        {
+          "broker_symbol": "SOLUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and USD quote",
+            "symbol text contains canonical base alias and USD"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "SOL",
+            "currency_margin": "SOL",
+            "currency_profit": "USD",
+            "description": "SOL vs USD",
+            "digits": 2,
+            "filling_mode": 2,
+            "name": "SOLUSD",
+            "path": "Game\\SOLUSD",
+            "point": 0.01,
+            "spread": 0,
+            "trade_contract_size": 10.0,
+            "trade_mode": 4,
+            "trade_tick_size": 0.01,
+            "trade_tick_value": 0.1,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "SOL/USD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "XRP/USD": {
+      "broker_symbol": "XRPUSD",
+      "candidates": [
+        {
+          "broker_symbol": "XRPUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and USD quote",
+            "symbol text contains canonical base alias and USD"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "XRP",
+            "currency_margin": "XRP",
+            "currency_profit": "USD",
+            "description": "XRP vs USD",
+            "digits": 5,
+            "filling_mode": 2,
+            "name": "XRPUSD",
+            "path": "Game\\XRPUSD",
+            "point": 1e-05,
+            "spread": 0,
+            "trade_contract_size": 100.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 0.001,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "XRP/USD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    }
+  }
+}

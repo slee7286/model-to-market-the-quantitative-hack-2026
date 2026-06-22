@@ -14,7 +14,7 @@ Live trading is not enabled in this scaffold. Execution records dry-run results 
 
 ## Current Scope
 
-The project currently includes the dry-run-first package scaffold, typed configuration and schemas, a read-only MT5 connection verification script, read-only symbol discovery/metadata bootstrap, local SQLite storage, a read-only market data collector, deterministic feature engineering, an offline backtester, a dry-run strategy engine, a pre-trade risk engine, and a dry-run execution engine. It intentionally does not enable live trading.
+The project currently includes the dry-run-first package scaffold, typed configuration and schemas, a read-only MT5 connection verification script, read-only symbol discovery/metadata bootstrap, local SQLite storage, a read-only market data collector, deterministic feature engineering, an offline backtester, a dry-run strategy engine, a pre-trade risk engine, a dry-run execution engine, and an offline analytics/retuning proposal loop. It intentionally does not enable live trading.
 
 ## Setup
 
@@ -360,6 +360,58 @@ python scripts/run_bot_dry_run.py --once --fixture
 Use `--no-fixture-fallback` when you want missing MT5 setup or missing symbol
 mapping to fail instead of using the non-live fixture fallback.
 
+## Offline Analytics And Improvement Loop
+
+Generate an offline analytics report from the local SQLite audit store:
+
+```powershell
+python scripts/run_analytics.py
+```
+
+Write a deterministic report suffix for an unattended run:
+
+```powershell
+python scripts/run_analytics.py --run-id 20260622_161444
+```
+
+The analytics script reads local storage only. It never connects to MT5, never
+calls `order_check`, never calls `order_send`, and never changes the live or
+dry-run strategy automatically.
+
+Reports are written under `reports/analytics/` and include:
+
+- return, max drawdown, and non-annualized 15-minute Sharpe;
+- trade count, real fill count, and dry-run order count;
+- symbol attribution and side attribution;
+- signal bucket performance;
+- spread and slippage proxy diagnostics;
+- strategy block, risk reject, and order reject reasons;
+- champion/challenger shadow evaluation when stored bars are available;
+- inactive coarse-grid parameter proposals.
+
+Parameter proposals use only coarse grids around the frozen `momo_v1`
+parameters:
+
+- `entry_threshold`: `1.0`, `1.25`, `1.5`
+- `exit_threshold`: `0.25`, `0.35`, `0.5`
+- `atr_stop_multiple`: `1.2`, `1.6`, `2.0`
+- `take_profit_multiple`: `1.8`, `2.4`, `3.0`
+
+The proposal loop does not increase `risk_per_trade`, gross leverage, symbol
+leverage, margin usage, or drawdown limits. Proposed rows are stored in
+`strategy_versions` with `active=0`, no approver, and no approval timestamp.
+
+Manual approval workflow:
+
+1. Review the inactive `strategy_versions` rows created by analytics.
+2. Backtest the candidate on non-fixture history and compare it with `momo_v1`.
+3. Run a bounded dry-run/shadow session and inspect risk blocks, spread costs,
+   and drawdown.
+4. Reject any candidate that increases leverage, margin usage, risk per trade,
+   or symbol caps without explicit human approval.
+5. Promote a candidate only through a separate manual approval change that marks
+   exactly one strategy version active.
+
 ## Project Layout
 
 ```text
@@ -388,6 +440,7 @@ scripts/
   run_data_collector.py
   export_feature_snapshots.py
   backtest.py
+  run_analytics.py
   run_strategy_once.py
   run_bot_dry_run.py
   print_risk_state.py
@@ -398,11 +451,8 @@ tests/
   test_strategy.py
   test_risk.py
   test_execution.py
+  test_analytics.py
 ```
-
-Later prompts will fill these modules in order:
-
-1. Dry-run execution.
 
 ## Safety Notes
 

@@ -49,7 +49,16 @@ from mt5_crypto_bot.risk import (
     RiskLimits,
     load_risk_context_from_store,
 )
-from mt5_crypto_bot.schemas import AccountSnapshot, PositionSide, PositionSnapshot, SymbolConfig
+from mt5_crypto_bot.schemas import (
+    AccountSnapshot,
+    OrderIntent,
+    OrderSide,
+    OrderType,
+    PositionSide,
+    PositionSnapshot,
+    SymbolConfig,
+    TimeInForce,
+)
 from mt5_crypto_bot.schemas import normalize_symbols
 from mt5_crypto_bot.storage import SQLiteStore
 from mt5_crypto_bot.strategy import (
@@ -111,6 +120,29 @@ class DryRunCycleResult:
             "risk": self.risk_result.summary(),
             "execution": self.execution_result.summary(),
             "table_counts": dict(self.table_counts),
+        }
+
+
+@dataclass(frozen=True)
+class DryRunSettlementResult:
+    """Summary of an optional dry-run end-of-session settlement pass."""
+
+    started_at_utc: datetime
+    finished_at_utc: datetime
+    target_symbols: tuple[str, ...]
+    order_intents: tuple[OrderIntent, ...]
+    risk_result: RiskBatchResult
+    execution_result: ExecutionBatchResult
+
+    def summary(self) -> dict[str, Any]:
+        """Return a JSON-safe settlement summary for CLI output."""
+        return {
+            "started_at_utc": self.started_at_utc.isoformat(),
+            "finished_at_utc": self.finished_at_utc.isoformat(),
+            "target_symbols": list(self.target_symbols),
+            "order_intents": len(self.order_intents),
+            "risk": self.risk_result.summary(),
+            "execution": self.execution_result.summary(),
         }
 
 
@@ -247,6 +279,53 @@ def run_dry_run_session(
             break
         time.sleep(min(poll_seconds, remaining))
     return results
+
+
+def run_dry_run_settlement_once(
+    database_url: str | Path,
+    *,
+    config: BotConfig,
+    target_symbols: Sequence[str] | str | None = ALLOWED_SYMBOLS,
+    now_utc: datetime | None = None,
+    kill_switch_file: str | Path | None = Path("config/KILL_SWITCH"),
+) -> DryRunSettlementResult:
+    """Record dry-run close intents for latest known open positions.
+
+    Settlement is deliberately dry-run only. It reads the latest position
+    snapshots, creates risk-reducing market close intents, risk-checks them, and
+    stores approved dry-run execution rows. It never calls MT5 order APIs.
+    """
+    symbols = normalize_symbols(target_symbols)
+    now = _to_utc(now_utc) if now_utc is not None else _utc_now()
+    with SQLiteStore(database_url) as store:
+        open_positions = _latest_open_position_snapshots(store, symbols)
+        order_intents = tuple(
+            _settlement_order_intent(position, store=store, now_utc=now, config=config)
+            for position in open_positions
+        )
+
+    risk_context = load_risk_context_from_store(
+        database_url,
+        target_symbols=symbols,
+        now_utc=now,
+        kill_switch_file=kill_switch_file,
+    )
+    risk_engine = RiskEngine(RiskLimits.from_config(config))
+    execution_engine = ExecutionEngine(config=config)
+    with SQLiteStore(database_url) as store:
+        risk_result = risk_engine.check_order_intents(order_intents, risk_context, store=store)
+        execution_result = execution_engine.execute_approved_orders(
+            risk_result.approved_orders,
+            store=store,
+        )
+    return DryRunSettlementResult(
+        started_at_utc=now,
+        finished_at_utc=_utc_now(),
+        target_symbols=symbols,
+        order_intents=order_intents,
+        risk_result=risk_result,
+        execution_result=execution_result,
+    )
 
 
 def collect_market_account_once(
@@ -408,6 +487,120 @@ def seed_synthetic_fixture_data(
         request_count=0,
         errors={"fallback_reason": reason or "synthetic fixture dry-run"},
     )
+
+
+def _latest_open_position_snapshots(
+    store: SQLiteStore,
+    symbols: tuple[str, ...],
+) -> tuple[PositionSnapshot, ...]:
+    placeholders = ",".join("?" for _ in symbols)
+    rows = store.fetch_all(
+        f"""
+        SELECT p.*
+        FROM positions_snapshots p
+        JOIN (
+          SELECT symbol, MAX(observed_at_utc) AS observed_at_utc
+          FROM positions_snapshots
+          WHERE symbol IN ({placeholders})
+          GROUP BY symbol
+        ) latest
+          ON p.symbol = latest.symbol
+         AND p.observed_at_utc = latest.observed_at_utc
+        WHERE p.volume > 0
+          AND lower(p.side) IN ('long', 'short')
+        ORDER BY p.symbol
+        """,
+        symbols,
+    )
+    return tuple(
+        PositionSnapshot(
+            observed_at_utc=_datetime_from_db(row["observed_at_utc"]),
+            symbol=row["symbol"],
+            ticket=row["ticket"],
+            side=row["side"],
+            volume=row["volume"],
+            price_open=row["price_open"],
+            price_current=row["price_current"],
+            stop_loss=row["sl"],
+            take_profit=row["tp"],
+            profit=row["profit"],
+        )
+        for row in rows
+    )
+
+
+def _settlement_order_intent(
+    position: PositionSnapshot,
+    *,
+    store: SQLiteStore,
+    now_utc: datetime,
+    config: BotConfig,
+) -> OrderIntent:
+    side = OrderSide.SELL if position.side == PositionSide.LONG.value else OrderSide.BUY
+    latest_tick = store.fetch_one(
+        """
+        SELECT bid, ask, last, time_utc
+        FROM ticks
+        WHERE symbol = ?
+        ORDER BY time_utc DESC, time_msc DESC
+        LIMIT 1
+        """,
+        (position.symbol,),
+    )
+    requested_price = _settlement_price(position, side, latest_tick)
+    safe_symbol = position.symbol.replace("/", "")
+    return OrderIntent(
+        client_order_id=f"settle-{safe_symbol}-{now_utc.strftime('%Y%m%dT%H%M%SZ')}",
+        signal_id=None,
+        created_at_utc=now_utc,
+        symbol=position.symbol,
+        side=side,
+        order_type=OrderType.MARKET,
+        requested_volume=position.volume,
+        requested_price=requested_price,
+        stop_loss=None,
+        take_profit=None,
+        time_in_force=TimeInForce.IOC,
+        strategy_version=config.strategy_version,
+        magic=config.bot_magic,
+        comment="dry-run end-of-session settlement",
+        metadata={
+            "feature_time_utc": now_utc.isoformat(),
+            "settlement": True,
+            "settlement_reason": "end_of_session",
+            "source_position_ticket": position.ticket,
+            "source_position_side": position.side,
+            "source_position_observed_at_utc": position.observed_at_utc.isoformat(),
+        },
+    )
+
+
+def _settlement_price(
+    position: PositionSnapshot,
+    side: OrderSide,
+    latest_tick: Mapping[str, Any] | None,
+) -> float | None:
+    if position.price_current is not None:
+        return position.price_current
+    if position.price_open is not None:
+        return position.price_open
+    if latest_tick is not None:
+        if side == OrderSide.SELL and latest_tick["bid"] is not None:
+            return float(latest_tick["bid"])
+        if side == OrderSide.BUY and latest_tick["ask"] is not None:
+            return float(latest_tick["ask"])
+        if latest_tick["last"] is not None:
+            return float(latest_tick["last"])
+    return None
+
+
+def _datetime_from_db(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return _to_utc(value)
+    if isinstance(value, str):
+        text = value.replace("Z", "+00:00")
+        return _to_utc(datetime.fromisoformat(text))
+    raise DryRunOrchestrationError(f"invalid stored UTC datetime: {value!r}")
 
 
 def ensure_default_account_and_flat_positions(
@@ -640,9 +833,11 @@ __all__ = [
     "MIN_DRY_RUN_POLL_SECONDS",
     "DryRunCycleResult",
     "DryRunOrchestrationError",
+    "DryRunSettlementResult",
     "collect_market_account_once",
     "run_dry_run_cycle",
     "run_dry_run_session",
+    "run_dry_run_settlement_once",
     "run_strategy_risk_execution_once",
     "seed_synthetic_fixture_data",
 ]

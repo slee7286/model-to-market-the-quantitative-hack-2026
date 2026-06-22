@@ -222,18 +222,72 @@ def read_last_error(mt5_module: Any) -> dict[str, Any]:
         return payload
     return {"code": None, "message": _json_safe(raw)}
 
-
 def initialize_mt5(credentials: MT5Credentials, mt5_module: Any | None = None) -> Any:
-    """Initialize MT5 without embedding credentials in the initialize call."""
+    """Initialize MT5 with a few safe connection variants.
+
+    Some terminals reject authenticated ``initialize`` when they have stale saved
+    account state, while others need the credentials embedded in ``initialize``.
+    Try the authenticated path first, then fall back to initializing the
+    terminal and letting ``login_mt5`` authenticate explicitly.
+    """
     mt5 = mt5_module or load_mt5_module()
-    initialized = mt5.initialize(str(credentials.path), timeout=credentials.timeout_ms)
-    if not initialized:
-        raise MT5ConnectionError(
-            "MT5 initialize failed. Check MT5_PATH, terminal installation, and Windows "
-            "permissions. Credentials were not printed.",
-            last_error=read_last_error(mt5),
+    attempts = (
+        (
+            "path_with_credentials",
+            lambda: mt5.initialize(
+                str(credentials.path),
+                login=credentials.login,
+                password=credentials.password,
+                server=credentials.server,
+                timeout=credentials.timeout_ms,
+            ),
+        ),
+        (
+            "path_then_login",
+            lambda: mt5.initialize(str(credentials.path), timeout=credentials.timeout_ms),
+        ),
+        (
+            "default_terminal_with_credentials",
+            lambda: mt5.initialize(
+                login=credentials.login,
+                password=credentials.password,
+                server=credentials.server,
+                timeout=credentials.timeout_ms,
+            ),
+        ),
+        (
+            "default_terminal_then_login",
+            lambda: mt5.initialize(timeout=credentials.timeout_ms),
+        ),
+    )
+    errors: list[dict[str, Any]] = []
+    for label, attempt in attempts:
+        try:
+            initialized = bool(attempt())
+        except TypeError as exc:
+            errors.append(
+                {
+                    "attempt": label,
+                    "code": None,
+                    "message": f"initialize signature mismatch: {exc.__class__.__name__}",
+                }
+            )
+            continue
+        if initialized:
+            return mt5
+        last_error = read_last_error(mt5)
+        last_error["attempt"] = label
+        errors.append(last_error)
+        shutdown_mt5(mt5)
+
+    last_error = dict(errors[-1]) if errors else read_last_error(mt5)
+    last_error["attempts"] = errors
+    raise MT5ConnectionError(
+        "MT5 initialize failed after authenticated and terminal-only attempts. "
+        "Check MT5_PATH, the exact MT5 server name, terminal installation, and "
+        "Windows permissions. Credentials were not printed.",
+        last_error=last_error,
         )
-    return mt5
 
 
 def login_mt5(credentials: MT5Credentials, mt5_module: Any) -> None:

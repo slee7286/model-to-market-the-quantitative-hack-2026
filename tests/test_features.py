@@ -225,6 +225,40 @@ class FeatureEngineeringTests(unittest.TestCase):
             self.assertTrue(exported.exists())
             self.assertIn("final_score_raw", exported.read_text(encoding="utf-8"))
 
+    def test_store_load_accepts_mixed_iso_timestamp_precision(self) -> None:
+        btc_bars = make_m5_bars("BTC/USD", base=10_000)
+        for index, row in enumerate(btc_bars):
+            timestamp = row["time_utc"]
+            assert isinstance(timestamp, datetime)
+            row["time_utc"] = (
+                timestamp.isoformat()
+                if index % 2
+                else timestamp.replace(microsecond=123456).isoformat()
+            )
+        ticks = make_ticks("BTC/USD", make_m5_bars("BTC/USD", base=10_000), spread=5.0)
+        for index, row in enumerate(ticks):
+            timestamp = row["time_utc"]
+            assert isinstance(timestamp, datetime)
+            row["time_utc"] = (
+                timestamp.isoformat()
+                if index % 2
+                else timestamp.replace(microsecond=654321).isoformat()
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trading.db"
+            with SQLiteStore(db_path) as store:
+                store.upsert_bars(btc_bars)
+                store.upsert_ticks(ticks)
+
+            features = compute_feature_snapshots_from_store(
+                db_path,
+                target_symbols=("BTC/USD",),
+            )
+
+        self.assertFalse(features.empty)
+        self.assertIn("feature_time_utc", features.columns)
+
 
 if __name__ == "__main__":
     unittest.main()

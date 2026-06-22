@@ -266,7 +266,7 @@ def _bars_to_frame(
     frame = frame[frame["symbol"].isin(symbols)]
     frame["timeframe"] = frame["timeframe"].astype(str).str.upper()
     frame = frame[frame["timeframe"].isin(TIMEFRAME_MINUTES)]
-    frame["time_utc"] = pd.to_datetime(frame["time_utc"], utc=True)
+    frame["time_utc"] = _parse_utc_series(frame["time_utc"])
     for column in ("open", "high", "low", "close", "tick_volume", "spread", "real_volume"):
         if column in frame.columns:
             frame[column] = pd.to_numeric(frame[column], errors="coerce")
@@ -835,7 +835,7 @@ def _ticks_to_frame(
     frame = frame.copy()
     frame["symbol"] = frame["symbol"].map(normalize_symbol)
     frame = frame[frame["symbol"].isin(symbols)]
-    frame["tick_time_utc"] = pd.to_datetime(frame["time_utc"], utc=True)
+    frame["tick_time_utc"] = _parse_utc_series(frame["time_utc"])
     for column in ("bid", "ask", "last"):
         frame[column] = pd.to_numeric(frame.get(column), errors="coerce")
     frame["spread"] = (frame["ask"] - frame["bid"]).clip(lower=0.0)
@@ -865,7 +865,7 @@ def _order_book_to_imbalance_frame(
     frame = frame.copy()
     frame["symbol"] = frame["symbol"].map(normalize_symbol)
     frame = frame[frame["symbol"].isin(symbols)]
-    frame["book_time_utc"] = pd.to_datetime(frame["observed_at_utc"], utc=True)
+    frame["book_time_utc"] = _parse_utc_series(frame["observed_at_utc"])
     frame["side"] = frame["side"].astype(str).str.lower()
     frame["level"] = pd.to_numeric(frame["level"], errors="coerce")
     volume_source = frame["volume_dbl"] if "volume_dbl" in frame.columns else frame.get("volume")
@@ -1002,6 +1002,11 @@ def _to_utc_timestamp(value: datetime) -> pd.Timestamp:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return pd.Timestamp(value.astimezone(timezone.utc))
+
+
+def _parse_utc_series(values: Any) -> pd.Series:
+    """Parse mixed ISO timestamps from SQLite/MT5 into UTC pandas timestamps."""
+    return pd.to_datetime(values, utc=True, format="ISO8601", errors="coerce")
 
 
 def _iso_or_empty(value: Any) -> str:
