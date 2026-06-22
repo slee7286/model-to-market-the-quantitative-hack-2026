@@ -688,7 +688,7 @@ def _fixture_symbol_metadata(symbol: str, now: datetime, reason: str | None) -> 
         trade_tick_value=1.0,
         trade_contract_size=1.0,
         volume_min=0.01,
-        volume_max=1_000_000.0,
+        volume_max=100.0,
         volume_step=0.01,
         spread=1.0,
         filling_mode=1,

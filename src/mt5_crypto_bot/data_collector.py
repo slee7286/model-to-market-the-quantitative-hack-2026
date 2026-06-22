@@ -47,10 +47,9 @@ TIMEFRAME_ATTRIBUTE_BY_NAME: dict[str, str] = {
     "M5": "TIMEFRAME_M5",
 }
 
-# Override the broker-reported maximum order volume. The broker metadata reports
-# a restrictive volume_max (100) that clamps leverage-based position sizing far
-# below target. Set to None to use the broker value verbatim.
-VOLUME_MAX_OVERRIDE: float | None = 10_000.0
+# Enforce the broker-reported maximum order volume. The connected account
+# rejects larger order sizes, so keep local metadata capped at the broker limit.
+VOLUME_MAX_OVERRIDE: float | None = 100.0
 
 METADATA_FIELDS: tuple[str, ...] = (
     "digits",

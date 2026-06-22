@@ -9,7 +9,7 @@ the explicit live-approval gates enforced by ``ExecutionEngine`` before any MT5
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -170,9 +170,15 @@ def run_live_session(
     *,
     minutes: float,
     poll_seconds: float = DEFAULT_LIVE_POLL_SECONDS,
+    on_cycle: Callable[[LiveCycleResult, int], None] | None = None,
     **cycle_kwargs: Any,
 ) -> list[LiveCycleResult]:
-    """Run a bounded guarded live session with conservative polling."""
+    """Run a bounded guarded live session with conservative polling.
+
+    ``on_cycle`` is invoked with ``(cycle_result, cycle_number)`` after each
+    cycle completes, so callers can report per-cycle order outcomes in real time
+    instead of waiting for the whole session to return.
+    """
     if minutes <= 0:
         raise LiveRunError("live --minutes must be positive")
     if poll_seconds < MIN_DRY_RUN_POLL_SECONDS:
@@ -207,15 +213,16 @@ def run_live_session(
 
         stop_at = time.monotonic() + float(minutes) * 60.0
         while True:
-            results.append(
-                run_live_cycle(
-                    config,
-                    minutes_limit=minutes,
-                    mt5_module=mt5,
-                    manage_connection=False,
-                    **cycle_kwargs,
-                )
+            cycle_result = run_live_cycle(
+                config,
+                minutes_limit=minutes,
+                mt5_module=mt5,
+                manage_connection=False,
+                **cycle_kwargs,
             )
+            results.append(cycle_result)
+            if on_cycle is not None:
+                on_cycle(cycle_result, len(results))
             remaining = stop_at - time.monotonic()
             if remaining <= 0:
                 break

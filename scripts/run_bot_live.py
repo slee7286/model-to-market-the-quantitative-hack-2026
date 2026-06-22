@@ -26,8 +26,13 @@ from mt5_crypto_bot.config import load_config
 from mt5_crypto_bot.data_collector import DEFAULT_BAR_COUNT, CollectorSettings
 from mt5_crypto_bot.dry_run import MIN_DRY_RUN_POLL_SECONDS
 from mt5_crypto_bot.execution import DEFAULT_LIVE_APPROVAL_FILE, LiveTradingApprovalError
-from mt5_crypto_bot.live import DEFAULT_LIVE_POLL_SECONDS, LiveRunError, run_live_session
-from mt5_crypto_bot.schemas import normalize_symbols
+from mt5_crypto_bot.live import (
+    DEFAULT_LIVE_POLL_SECONDS,
+    LiveCycleResult,
+    LiveRunError,
+    run_live_session,
+)
+from mt5_crypto_bot.schemas import ExecutionResult, ExecutionStatus, normalize_symbols
 from mt5_crypto_bot.symbols import DEFAULT_SYMBOL_MAP_PATH
 
 
@@ -102,6 +107,82 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _enum_value(value: object) -> str:
+    return str(getattr(value, "value", value))
+
+
+def _not_placed_reason(result: ExecutionResult) -> str:
+    """Build a human-readable reason an approved order was not placed."""
+    parts: list[str] = []
+    if result.message:
+        parts.append(result.message)
+    if result.retcode is not None:
+        parts.append(f"retcode={result.retcode}")
+    payload = result.result or {}
+    order_check = payload.get("order_check") or {}
+    if isinstance(order_check, dict):
+        if order_check.get("comment") or order_check.get("retcode") is not None:
+            parts.append(
+                f"order_check[retcode={order_check.get('retcode')}, "
+                f"comment={order_check.get('comment')!r}]"
+            )
+        elif payload.get("order_check_called") and not order_check:
+            parts.append("order_check returned an empty/None result (broker rejected the request outright)")
+    order_send = payload.get("order_send") or {}
+    if isinstance(order_send, dict) and order_send.get("comment"):
+        parts.append(f"order_send[comment={order_send.get('comment')!r}]")
+    last_error = payload.get("last_error")
+    if last_error:
+        parts.append(f"last_error={last_error}")
+    return "; ".join(parts) or "no reason recorded"
+
+
+def _print_order_outcomes(result: LiveCycleResult, cycle_number: int) -> None:
+    """Print every order attempt this cycle: risk verdict and placement result."""
+    decisions = result.risk_result.decisions
+    if not decisions:
+        return
+    exec_by_id = {res.client_order_id: res for res in result.execution_result.results}
+    finished = result.finished_at_utc.isoformat()
+    print(f"\n=== cycle {cycle_number} @ {finished}: {len(decisions)} order attempt(s) ===", flush=True)
+    for decision in decisions:
+        intent = decision.order_intent
+        if intent is None:
+            print("  ATTEMPT (could not build order intent)", flush=True)
+            print(f"      RISK   : BLOCKED -> {decision.risk_check.reason}", flush=True)
+            print("      PLACED : no (blocked before execution)", flush=True)
+            continue
+
+        print(
+            f"  ATTEMPT {intent.symbol} {_enum_value(intent.side)} "
+            f"vol={intent.requested_volume:g} @ {intent.requested_price}",
+            flush=True,
+        )
+        if not decision.passed:
+            print(f"      RISK   : BLOCKED -> {decision.risk_check.reason}", flush=True)
+            print("      PLACED : no (blocked before execution)", flush=True)
+            continue
+
+        print("      RISK   : PASSED", flush=True)
+        execution = exec_by_id.get(intent.client_order_id)
+        if execution is None:
+            print("      PLACED : no -> risk-approved but no execution result was recorded", flush=True)
+            continue
+
+        status = _enum_value(execution.status)
+        if status in {ExecutionStatus.FILLED.value, ExecutionStatus.PARTIAL.value}:
+            note = "partial fill" if status == ExecutionStatus.PARTIAL.value else "filled"
+            print(
+                f"      PLACED : YES ({note}) ticket={execution.mt5_order_ticket} "
+                f"fill_price={execution.average_fill_price} retcode={execution.retcode}",
+                flush=True,
+            )
+        elif status == ExecutionStatus.DRY_RUN.value:
+            print("      PLACED : no (dry-run mode: order recorded, not sent to MT5)", flush=True)
+        else:
+            print(f"      PLACED : no -> {_not_placed_reason(execution)}", flush=True)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
@@ -120,6 +201,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config,
             minutes=args.minutes,
             poll_seconds=args.poll_seconds,
+            on_cycle=_print_order_outcomes,
             database_url=args.database_url,
             target_symbols=symbols,
             symbol_map_path=args.symbol_map,

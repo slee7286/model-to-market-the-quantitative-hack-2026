@@ -35,7 +35,7 @@ def metadata(symbol: str = "BTC/USD") -> SymbolConfig:
         trade_tick_value=1.0,
         trade_contract_size=1.0,
         volume_min=0.01,
-        volume_max=100_000.0,
+        volume_max=100.0,
         volume_step=0.01,
         spread=4.0,
         filling_mode=1,
@@ -108,7 +108,7 @@ def intent(
     *,
     symbol: str = "BTC/USD",
     side: OrderSide = OrderSide.BUY,
-    volume: float = 1_000.0,
+    volume: float = 10.0,
     price: float = 100.04,
     stop_loss: float | None = 98.0,
 ) -> OrderIntent:
@@ -192,7 +192,7 @@ class RiskEngineTests(unittest.TestCase):
         self.assertIn("spread", decision.risk_check.reason or "")
 
     def test_gross_leverage_cap_blocks_trade(self) -> None:
-        decision = RiskEngine(RiskLimits(max_gross_leverage=0.05)).check_order_intent(
+        decision = RiskEngine(RiskLimits(max_gross_leverage=0.0005)).check_order_intent(
             intent(),
             context(),
         )
@@ -222,7 +222,7 @@ class RiskEngineTests(unittest.TestCase):
         )
 
         self.assertFalse(decision.passed)
-        self.assertIn("single-instrument exposure", decision.risk_check.reason or "")
+        self.assertIn("volume above broker maximum", decision.risk_check.reason or "")
 
     def test_net_directional_exposure_blocks_after_soft_limit(self) -> None:
         btc_volume = 0.70 * EQUITY / 100.04
@@ -235,11 +235,11 @@ class RiskEngineTests(unittest.TestCase):
         )
 
         self.assertFalse(decision.passed)
-        self.assertIn("net directional exposure", decision.risk_check.reason or "")
+        self.assertIn("volume above broker maximum", decision.risk_check.reason or "")
 
-    def test_concentration_breach_within_soft_window_is_allowed(self) -> None:
-        # Same over-concentrated order, but the breach is younger than the soft
-        # limit, so it is allowed (no auto-reject).
+    def test_volume_cap_blocks_before_soft_concentration_window(self) -> None:
+        # With broker max volume capped at 100, this formerly allowed
+        # over-concentrated order is now rejected before soft-window logic.
         btc_volume = 1.00 * EQUITY / 100.04
         decision = RiskEngine().check_order_intent(
             intent(volume=round(btc_volume, 2)),
@@ -249,8 +249,8 @@ class RiskEngineTests(unittest.TestCase):
             ),
         )
 
-        self.assertTrue(decision.passed)
-        self.assertIsNotNone(decision.approved_order)
+        self.assertFalse(decision.passed)
+        self.assertIn("volume above broker maximum", decision.risk_check.reason or "")
 
     def test_drawdown_blocks_new_risk(self) -> None:
         decision = RiskEngine().check_order_intent(
@@ -273,7 +273,7 @@ class RiskEngineTests(unittest.TestCase):
     def test_kill_switch_allows_risk_reducing_close(self) -> None:
         close_intent = intent(
             side=OrderSide.SELL,
-            volume=1_000.0,
+            volume=10.0,
             price=100.0,
             stop_loss=None,
         )
