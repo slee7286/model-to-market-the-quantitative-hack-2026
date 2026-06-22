@@ -4,6 +4,8 @@ Run ID: `20260622_031000`
 
 This document freezes the first code-ready strategy specification for the MT5 crypto bot. It is documentation only: no strategy, risk, or execution code is implemented in this phase.
 
+Current status update: the strategy described here has since been implemented through dry-run execution and offline analytics, and a separate guarded live runner now exists. The freeze itself remains the source for `momo_v1` strategy/risk intent. Any live session must still use `scripts/run_bot_live.py` with `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json`; unattended automation must not create those gates or place live orders.
+
 The strategy is constrained to the allowed crypto instruments only:
 
 - `BAR/USD` as HBAR/Hedera per `information.md`
@@ -12,7 +14,7 @@ The strategy is constrained to the allowed crypto instruments only:
 - `SOL/USD`
 - `XRP/USD`
 
-`rules.md` remains the highest-priority source of truth. All future execution must remain dry-run or paper mode unless a separate future live-approval workflow explicitly enables live trading.
+`rules.md` remains the highest-priority source of truth. All unattended execution must remain dry-run, paper, read-only, or test/report generation. Guarded live execution is available only through the separate approval-gated live runner.
 
 ## Data Availability Audit
 
@@ -262,7 +264,7 @@ For short positions, use the symmetric conditions:
 - M5 close crosses above `ema_20`.
 - Stop-loss, take-profit, trailing stop, time stop, stale data, spread, or portfolio guard triggers.
 
-Risk-reduction exits should be allowed even when normal entry spread caps fail, but only if current state is reliable enough to size and route the reduction safely in a future live-approved workflow.
+Risk-reduction exits should be allowed even when normal entry spread caps fail, but only if current state is reliable enough to size and route the reduction safely through an explicitly approved live workflow.
 
 ## Stops, Take-Profits, And Time Stops
 

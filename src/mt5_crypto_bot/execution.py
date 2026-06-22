@@ -56,7 +56,7 @@ class LiveTradingApprovalError(ExecutionEngineError):
 
 
 class LiveExecutionError(ExecutionEngineError):
-    """Raised when guarded future live execution fails before a result is available."""
+    """Raised when guarded live execution fails before a result is available."""
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class ExecutionBatchResult:
 
 
 class ExecutionEngine:
-    """Record approved order intents as dry-run execution results."""
+    """Record approved order intents as dry-run or guarded live execution results."""
 
     def __init__(
         self,
@@ -106,9 +106,9 @@ class ExecutionEngine:
     ) -> ExecutionResult:
         """Execute one approved order.
 
-        In the current non-live build, ``dry_run`` and ``paper`` both record a
-        simulated result. ``live`` is only reachable through explicit constructor
-        override and is blocked unless the approval mechanism passes.
+        ``dry_run`` and ``paper`` both record a simulated result. ``live`` is
+        only reachable through explicit constructor override and is blocked
+        unless the approval mechanism passes.
         """
         approved = _coerce_approved_order(approved_order)
         _ensure_approved(approved)
@@ -266,7 +266,7 @@ class ExecutionEngine:
         return result
 
     def require_live_approval(self) -> dict[str, Any]:
-        """Validate explicit future live-approval controls.
+        """Validate explicit live-approval controls.
 
         This method intentionally checks both an environment flag and a local JSON
         file. The repository never creates that file in unattended runs.
