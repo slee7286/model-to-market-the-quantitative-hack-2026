@@ -21,10 +21,11 @@ class StrictBaseModel(BaseModel):
 
 
 class TradeMode(str, Enum):
-    """Execution modes currently allowed by unattended, non-live automation."""
+    """Execution modes used by the guarded execution layer."""
 
     DRY_RUN = "dry_run"
     PAPER = "paper"
+    LIVE = "live"
 
 
 class Direction(str, Enum):

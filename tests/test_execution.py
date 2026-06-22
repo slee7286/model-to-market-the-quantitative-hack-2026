@@ -83,6 +83,9 @@ class FakeMT5:
     POSITION_TYPE_SELL = 1
     DEAL_TYPE_BUY = 0
     DEAL_TYPE_SELL = 1
+    TRADE_RETCODE_DONE = 10009
+    TRADE_RETCODE_PLACED = 10008
+    TRADE_RETCODE_DONE_PARTIAL = 10010
 
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -135,6 +138,7 @@ class FakeMT5:
 class SimpleObject:
     ticket: int | None = None
     order: int | None = None
+    deal: int | None = None
     position_id: int | None = None
     symbol: str = "BTCUSD"
     type: int = 0
@@ -147,8 +151,33 @@ class SimpleObject:
     profit: float = 0.0
     commission: float = 0.0
     swap: float = 0.0
+    retcode: int | None = None
+    comment: str | None = None
     time_msc: int | None = None
     time_update_msc: int | None = None
+
+
+class FakeLiveMT5(FakeMT5):
+    def __init__(self, *, check_retcode: int = FakeMT5.TRADE_RETCODE_DONE) -> None:
+        super().__init__()
+        self.check_retcode = check_retcode
+
+    def order_check(self, request: object) -> object:
+        self.calls.append("order_check")
+        self.check_request = request
+        return SimpleObject(retcode=self.check_retcode, comment="check result")
+
+    def order_send(self, request: object) -> object:
+        self.calls.append("order_send")
+        self.send_request = request
+        return SimpleObject(
+            retcode=self.TRADE_RETCODE_DONE,
+            order=555,
+            deal=777,
+            volume=1.25,
+            price=100.5,
+            comment="send result",
+        )
 
 
 class ExecutionEngineTests(unittest.TestCase):
@@ -227,6 +256,69 @@ class ExecutionEngineTests(unittest.TestCase):
                 os.environ.pop("LIVE_APPROVED", None)
             else:
                 os.environ["LIVE_APPROVED"] = old_value
+
+    def test_live_order_check_rejection_does_not_call_order_send(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5(check_retcode=10013)
+
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(approved_order(), mt5_module=fake_mt5)
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(fake_mt5.calls, ["order_check"])
+        self.assertEqual(result.trade_mode, "live")
+        self.assertEqual(result.status, "rejected")
+        self.assertTrue(result.result["order_check_called"])
+        self.assertFalse(result.result["order_send_called"])
+
+    def test_live_order_check_then_order_send_records_live_result(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5()
+                with SQLiteStore(Path(tmpdir) / "trading.db") as store:
+                    result = ExecutionEngine(
+                        trade_mode="live",
+                        live_approval_file=approval_file,
+                    ).execute_approved_order(
+                        approved_order(),
+                        store=store,
+                        mt5_module=fake_mt5,
+                    )
+                    row = store.fetch_one(
+                        "SELECT status, result_json FROM orders WHERE client_order_id = ?",
+                        ("order-1",),
+                    )
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(fake_mt5.calls, ["order_check", "order_send"])
+        self.assertEqual(result.trade_mode, "live")
+        self.assertEqual(result.status, "filled")
+        self.assertEqual(result.mt5_order_ticket, 555)
+        self.assertEqual(result.mt5_deal_ticket, 777)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "filled")
+        payload = json.loads(row["result_json"])
+        self.assertTrue(payload["result"]["order_check_called"])
+        self.assertTrue(payload["result"]["order_send_called"])
 
     def test_reconciliation_helpers_are_read_only_and_store_snapshots(self) -> None:
         fake_mt5 = FakeMT5()

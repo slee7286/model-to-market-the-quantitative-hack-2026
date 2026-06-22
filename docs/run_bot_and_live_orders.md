@@ -352,30 +352,30 @@ After the session:
 
 ## 13. Live-Order Procedure
 
-Live orders are not enabled by this request and are not available through the current CLI scripts.
+Live orders are available only through the separate guarded runner:
 
-The safe live-order path is a future, separately approved workflow:
+```powershell
+python scripts/run_bot_live.py --minutes 30 --poll-seconds 15
+```
 
-1. User gives an explicit go-live prompt, for example: `Enable guarded live trading for this repo now`.
-2. Developer re-reads `rules.md` and confirms the five allowed instruments only.
-3. Developer confirms MT5 credentials, broker symbol map, symbol metadata, bars, ticks, and account state are live and fresh.
-4. Developer updates the code in a small, reviewable patch to add a guarded live runner. The current `ExecutionEngine` already contains a guarded `trade_mode="live"` helper, but `BotConfig` intentionally rejects `TRADE_MODE=live` in this non-live build.
-5. Developer adds tests proving:
-   - live mode is impossible without explicit environment and approval-file gates;
-   - missing approval does not call `order_check` or `order_send`;
-   - failed `order_check` does not call `order_send`;
-   - successful fake `order_check` and fake `order_send` are stored correctly;
-   - `scripts/run_bot_dry_run.py` remains dry-run only.
-6. User reviews the patch and gives final go-live approval.
-7. Only then create the local approval artifact and run the live runner.
+Do not use `scripts/run_bot_dry_run.py` for live trading. It remains dry-run only.
 
-Required future live gates:
+The live runner fails closed unless all of these are true:
+
+1. `rules.md` has been reviewed and the target symbols are only `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`.
+2. MT5 credentials, broker symbol map, symbol metadata, bars, ticks, and account state are live and fresh.
+3. `LIVE_APPROVED=true` is set in the runtime environment.
+4. `config/LIVE_APPROVED.json` exists and contains `live_approved=true` or `approved=true`.
+5. The requested `--minutes` is positive and, if the approval file has `max_minutes`, does not exceed it.
+6. The approval-file `scope`, when present, includes every requested symbol.
+
+Required live gate:
 
 ```powershell
 $env:LIVE_APPROVED = "true"
 ```
 
-Local file, created only after explicit approval:
+Local approval file:
 
 ```json
 {
@@ -396,7 +396,7 @@ config/LIVE_APPROVED.json
 
 It is gitignored and should never be committed.
 
-Future live runner requirements:
+Live runner behavior:
 
 | Requirement | Reason |
 | --- | --- |
@@ -467,4 +467,13 @@ Dry-run completion criteria:
 | Database audit trail | `signals`, `risk_checks`, and `orders` contain recent rows. |
 | Rules compliance | Only the five allowed crypto instruments appear in output and database rows. |
 
-Live completion criteria are intentionally not satisfied in the current non-live build. They require a future explicit go-live approval and a separate guarded live runner.
+Guarded live readiness criteria:
+
+| Criterion | Status To Verify |
+| --- | --- |
+| Separate runner | Use `scripts/run_bot_live.py`, not `scripts/run_bot_dry_run.py`. |
+| Approval gates | Missing `LIVE_APPROVED=true` or missing/invalid `config/LIVE_APPROVED.json` fails before MT5 order APIs. |
+| Broker sequence | Live execution calls `order_check` before `order_send`. |
+| Failed check behavior | Failed `order_check` stores a rejection and does not call `order_send`. |
+| Audit trail | Successful fake live sends are stored as `trade_mode='live'` execution rows. |
+| Rules compliance | Only the five allowed crypto instruments are requested. |

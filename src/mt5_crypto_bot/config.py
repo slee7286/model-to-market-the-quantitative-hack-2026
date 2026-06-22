@@ -121,7 +121,18 @@ class BotConfig(StrictBaseModel):
         if value is None or value == "":
             return DEFAULT_TRADE_MODE
         if isinstance(value, str):
-            return value.strip().lower()
+            normalized = value.strip().lower()
+            if normalized == TradeMode.LIVE.value:
+                raise ValueError(
+                    "TRADE_MODE=live is reserved for the separate guarded live runner; "
+                    "keep shared config in dry_run or paper mode"
+                )
+            return normalized
+        if getattr(value, "value", value) == TradeMode.LIVE.value:
+            raise ValueError(
+                "TRADE_MODE=live is reserved for the separate guarded live runner; "
+                "keep shared config in dry_run or paper mode"
+            )
         return value
 
     @model_validator(mode="after")

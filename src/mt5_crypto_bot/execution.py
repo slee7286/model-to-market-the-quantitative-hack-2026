@@ -1,10 +1,8 @@
 """Dry-run execution and guarded MT5 request helpers.
 
-The only enabled execution behavior in this module is dry-run recording. The
-live submission method exists so future go-live work has one guarded place to
-extend, but it requires explicit ``TRADE_MODE=live`` plus a separate approval
-artifact before it can even run ``order_check``. Normal project configuration
-does not currently accept live mode.
+Dry-run remains the default behavior. Guarded live execution is reachable only
+through an explicit constructor override plus ``LIVE_APPROVED=true`` and a local
+approval artifact before it can even run ``order_check``.
 """
 
 from __future__ import annotations
@@ -72,10 +70,11 @@ class ExecutionBatchResult:
         return sum(1 for result in self.results if result.status == ExecutionStatus.DRY_RUN.value)
 
     def summary(self) -> dict[str, Any]:
+        sent_to_mt5 = sum(1 for result in self.results if result.result.get("sent_to_mt5"))
         return {
             "orders": len(self.results),
             "dry_run": self.dry_run_count,
-            "sent_to_mt5": 0,
+            "sent_to_mt5": sent_to_mt5,
             "statuses": [result.status for result in self.results],
         }
 
@@ -218,7 +217,7 @@ class ExecutionEngine:
             result = ExecutionResult(
                 client_order_id=intent.client_order_id,
                 executed_at_utc=_utc_now(),
-                trade_mode=TradeMode.DRY_RUN,
+                trade_mode=TradeMode.LIVE,
                 status=ExecutionStatus.REJECTED,
                 symbol=intent.symbol,
                 requested_volume=intent.requested_volume,
@@ -226,7 +225,12 @@ class ExecutionEngine:
                 retcode=_retcode(check_result),
                 message="live order_check rejected request; order_send was not called",
                 request=request,
-                result={"order_check": check_payload, "order_send_called": False},
+                result={
+                    "sent_to_mt5": False,
+                    "order_check_called": True,
+                    "order_send_called": False,
+                    "order_check": check_payload,
+                },
             )
             if store is not None:
                 store.upsert_execution_result(result)
@@ -237,7 +241,7 @@ class ExecutionEngine:
         result = ExecutionResult(
             client_order_id=intent.client_order_id,
             executed_at_utc=_utc_now(),
-            trade_mode=TradeMode.DRY_RUN,
+            trade_mode=TradeMode.LIVE,
             status=_execution_status_from_send(send_result, mt5_module),
             symbol=intent.symbol,
             requested_volume=intent.requested_volume,
@@ -249,7 +253,13 @@ class ExecutionEngine:
             retcode=_retcode(send_result),
             message=str(send_payload.get("comment") or "guarded live order_send result"),
             request=request,
-            result={"order_check": check_payload, "order_send": send_payload},
+            result={
+                "sent_to_mt5": True,
+                "order_check_called": True,
+                "order_send_called": True,
+                "order_check": check_payload,
+                "order_send": send_payload,
+            },
         )
         if store is not None:
             store.upsert_execution_result(result)
@@ -263,7 +273,7 @@ class ExecutionEngine:
         """
         if self.trade_mode != "live":
             raise LiveTradingApprovalError(
-                f"live execution requires TRADE_MODE=live; current mode is {self.trade_mode!r}"
+                f"live execution requires execution trade_mode='live'; current mode is {self.trade_mode!r}"
             )
         if not _truthy(os.environ.get(self.live_approval_env)):
             raise LiveTradingApprovalError(
