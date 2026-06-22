@@ -97,8 +97,14 @@ def run_live_cycle(
     live_approval_file: str | Path = DEFAULT_LIVE_APPROVAL_FILE,
     minutes_limit: float | None = None,
     mt5_module: Any | None = None,
+    manage_connection: bool = True,
 ) -> LiveCycleResult:
-    """Run one guarded live collection, signal, risk, and execution cycle."""
+    """Run one guarded live collection, signal, risk, and execution cycle.
+
+    When ``manage_connection`` is False, ``mt5_module`` is an already-connected
+    session owned by the caller; collection and execution reuse it without
+    initializing or shutting it down.
+    """
     symbols = normalize_symbols(target_symbols)
     db_url = database_url or config.database_url or DEFAULT_DATABASE_URL
     started_at = _utc_now()
@@ -117,6 +123,7 @@ def run_live_cycle(
         settings=collector_settings,
         mt5_module=mt5_module,
         now_utc=started_at,
+        manage_connection=manage_connection,
     )
 
     try:
@@ -139,6 +146,7 @@ def run_live_cycle(
         symbol_map_path=symbol_map_path,
         live_approval_file=live_approval_file,
         mt5_module=mt5_module,
+        manage_connection=manage_connection,
     )
     with SQLiteStore(db_url) as store:
         table_counts = {
@@ -171,15 +179,51 @@ def run_live_session(
         raise LiveRunError(
             f"poll_seconds must be >= {MIN_DRY_RUN_POLL_SECONDS:g} for conservative polling"
         )
+
+    # Hold ONE MT5 connection for the whole session instead of reconnecting every
+    # cycle. Repeated initialize/login/shutdown forces the terminal to
+    # re-authorize to the broker, which churns the connection and resets the
+    # terminal's AutoTrading state, causing order_send to be rejected.
+    mt5 = cycle_kwargs.pop("mt5_module", None)
+    owns_connection = mt5 is None
+    initialized = False
     results: list[LiveCycleResult] = []
-    stop_at = time.monotonic() + float(minutes) * 60.0
-    while True:
-        results.append(run_live_cycle(config, minutes_limit=minutes, **cycle_kwargs))
-        remaining = stop_at - time.monotonic()
-        if remaining <= 0:
-            break
-        time.sleep(min(poll_seconds, remaining))
-    return results
+    try:
+        if owns_connection:
+            # Validate live approval BEFORE touching MT5 so the connection is
+            # never opened without an approved session.
+            symbols = normalize_symbols(cycle_kwargs.get("target_symbols") or ALLOWED_SYMBOLS)
+            approval_file = cycle_kwargs.get("live_approval_file", DEFAULT_LIVE_APPROVAL_FILE)
+            _require_live_approval(
+                symbols=symbols,
+                live_approval_file=approval_file,
+                minutes_limit=minutes,
+            )
+            credentials = build_mt5_credentials(config)
+            mt5 = load_mt5_module()
+            initialize_mt5(credentials, mt5)
+            initialized = True
+            login_mt5(credentials, mt5)
+
+        stop_at = time.monotonic() + float(minutes) * 60.0
+        while True:
+            results.append(
+                run_live_cycle(
+                    config,
+                    minutes_limit=minutes,
+                    mt5_module=mt5,
+                    manage_connection=False,
+                    **cycle_kwargs,
+                )
+            )
+            remaining = stop_at - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(poll_seconds, remaining))
+        return results
+    finally:
+        if owns_connection and initialized:
+            shutdown_mt5(mt5)
 
 
 def _require_live_approval(
@@ -267,19 +311,21 @@ def _execute_live_approved_orders(
     symbol_map_path: str | Path,
     live_approval_file: str | Path,
     mt5_module: Any | None,
+    manage_connection: bool = True,
 ) -> ExecutionBatchResult:
     if not risk_result.approved_orders:
         return ExecutionBatchResult(())
 
     symbol_map = load_confirmed_symbol_map(symbol_map_path, target_symbols=target_symbols)
     broker_to_canonical = {broker: canonical for canonical, broker in symbol_map.items()}
-    credentials = build_mt5_credentials(config)
     mt5 = mt5_module or load_mt5_module()
     initialized = False
     try:
-        initialize_mt5(credentials, mt5)
-        initialized = True
-        login_mt5(credentials, mt5)
+        if manage_connection:
+            credentials = build_mt5_credentials(config)
+            initialize_mt5(credentials, mt5)
+            initialized = True
+            login_mt5(credentials, mt5)
         with SQLiteStore(database_url) as store:
             execution_result = ExecutionEngine(
                 config=config,
@@ -303,7 +349,7 @@ def _execute_live_approved_orders(
             )
         return execution_result
     finally:
-        if initialized:
+        if manage_connection and initialized:
             shutdown_mt5(mt5)
 
 

@@ -47,6 +47,11 @@ TIMEFRAME_ATTRIBUTE_BY_NAME: dict[str, str] = {
     "M5": "TIMEFRAME_M5",
 }
 
+# Override the broker-reported maximum order volume. The broker metadata reports
+# a restrictive volume_max (100) that clamps leverage-based position sizing far
+# below target. Set to None to use the broker value verbatim.
+VOLUME_MAX_OVERRIDE: float | None = 10_000.0
+
 METADATA_FIELDS: tuple[str, ...] = (
     "digits",
     "point",
@@ -230,10 +235,14 @@ class MarketDataCollector:
         self.settings = settings or CollectorSettings()
         self.parquet_writer = parquet_writer
         self.logger = logger or LOGGER
+        # Broker server-time -> UTC offset for tick timestamps, detected per cycle.
+        self._tick_utc_offset: timedelta | None = None
 
     def collect_once(self) -> CollectionCycleResult:
         """Run one read-only collection cycle and persist rows."""
         started_at = datetime.now(timezone.utc)
+        # Re-detect the broker tick clock offset against UTC on every cycle.
+        self._tick_utc_offset = None
         bars: list[dict[str, Any]] = []
         ticks: list[dict[str, Any]] = []
         order_book_rows: list[dict[str, Any]] = []
@@ -373,6 +382,8 @@ class MarketDataCollector:
         }
         for field_name in METADATA_FIELDS:
             metadata[field_name] = _json_safe(raw.get(field_name))
+        if VOLUME_MAX_OVERRIDE is not None:
+            metadata["volume_max"] = VOLUME_MAX_OVERRIDE
         return metadata, 1
 
     def _collect_bars(
@@ -419,11 +430,39 @@ class MarketDataCollector:
         if raw_tick is None:
             return None, False, 1
         tick = _tick_row(canonical, broker_symbol, _object_to_mapping(raw_tick), "mt5.symbol_info_tick")
+        self._detect_tick_offset(tick, observed_at)
+        self._apply_tick_offset(tick)
         tick_dt = _datetime_from_any(tick["time_utc"])
         age_seconds = max(0.0, (observed_at - tick_dt).total_seconds())
         tick["observed_at_utc"] = observed_at
         tick["tick_age_seconds"] = age_seconds
         return tick, age_seconds > self.settings.freshness_seconds, 1
+
+    def _detect_tick_offset(self, tick: Mapping[str, Any], observed_at: datetime) -> None:
+        """Detect the broker tick clock's whole-hour offset from UTC, once per cycle.
+
+        MT5 reports tick times in broker server time, which differs from UTC by a
+        whole number of hours. A tick we just read cannot post-date the moment we
+        read it, so any positive skew beyond a small tolerance reveals the server
+        offset. Snap it to whole hours so genuine sub-minute staleness is kept.
+        """
+        if self._tick_utc_offset is not None:
+            return
+        server_dt = _datetime_from_any(tick["time_utc"])
+        skew_seconds = (server_dt - observed_at).total_seconds()
+        if skew_seconds > 60.0:
+            self._tick_utc_offset = timedelta(hours=round(skew_seconds / 3600.0))
+        else:
+            self._tick_utc_offset = timedelta(0)
+
+    def _apply_tick_offset(self, tick: dict[str, Any]) -> None:
+        """Shift a tick's timestamps from broker server time to UTC, if offset set."""
+        offset = self._tick_utc_offset
+        if not offset:
+            return
+        aligned = _datetime_from_any(tick["time_utc"]) - offset
+        tick["time_utc"] = aligned
+        tick["time_msc"] = int(aligned.timestamp() * 1000)
 
     def _collect_tick_backfill(
         self,
@@ -440,10 +479,13 @@ class MarketDataCollector:
             self.settings.tick_backfill_count,
             flags,
         )
-        return [
+        backfill = [
             _tick_row(canonical, broker_symbol, record, "mt5.copy_ticks_from")
             for record in _iter_mt5_records(raw_ticks)
-        ], 1
+        ]
+        for tick in backfill:
+            self._apply_tick_offset(tick)
+        return backfill, 1
 
     def _collect_market_depth(
         self,

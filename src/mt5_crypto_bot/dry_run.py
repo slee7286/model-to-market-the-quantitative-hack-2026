@@ -337,17 +337,24 @@ def collect_market_account_once(
     settings: CollectorSettings | None = None,
     mt5_module: Any | None = None,
     now_utc: datetime | None = None,
+    manage_connection: bool = True,
 ) -> CollectionCycleResult:
-    """Collect read-only market, account, and position state in one MT5 session."""
+    """Collect read-only market, account, and position state in one MT5 session.
+
+    When ``manage_connection`` is False the caller owns an already-initialized
+    ``mt5_module`` (e.g. a persistent live session); this function then reuses it
+    and never calls initialize/login/shutdown, avoiding per-cycle reconnects.
+    """
     symbols = normalize_symbols(target_symbols)
     symbol_map = load_confirmed_symbol_map(symbol_map_path, target_symbols=symbols)
-    credentials = build_mt5_credentials(config)
     mt5 = mt5_module or load_mt5_module()
     initialized = False
     try:
-        initialize_mt5(credentials, mt5)
-        initialized = True
-        login_mt5(credentials, mt5)
+        if manage_connection:
+            credentials = build_mt5_credentials(config)
+            initialize_mt5(credentials, mt5)
+            initialized = True
+            login_mt5(credentials, mt5)
         observed_at = _to_utc(now_utc) if now_utc is not None else _utc_now()
         with SQLiteStore(database_url) as store:
             collector = MarketDataCollector(
@@ -379,7 +386,7 @@ def collect_market_account_once(
             )
             return result
     finally:
-        if initialized:
+        if manage_connection and initialized:
             shutdown_mt5(mt5)
 
 
