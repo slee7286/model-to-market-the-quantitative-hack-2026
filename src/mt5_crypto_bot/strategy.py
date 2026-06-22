@@ -224,7 +224,12 @@ class DryRunStrategyEngine:
         metadata = _metadata_for(strategy_context.symbol_metadata, symbol)
         current_leverage = float(strategy_context.current_position_leverage.get(symbol, 0.0))
         current_volume = float(strategy_context.current_position_volume.get(symbol, 0.0))
-        feature_payload = _feature_payload(data, score)
+        feature_payload = _feature_payload(
+            data,
+            score,
+            entry_threshold=self.params.entry_threshold,
+            exit_threshold=self.params.exit_threshold,
+        )
 
         block_reason = _activation_block_reason(
             data,
@@ -250,7 +255,9 @@ class DryRunStrategyEngine:
             )
             return signal, None
 
-        exit_reason = _exit_reason(data, score, current_leverage)
+        exit_reason = _exit_reason(
+            data, score, current_leverage, exit_threshold=self.params.exit_threshold
+        )
         if exit_reason is not None:
             signal = self._signal(
                 symbol=symbol,
@@ -745,6 +752,8 @@ def _exit_reason(
     row: Mapping[str, Any],
     score: float,
     current_leverage: float,
+    *,
+    exit_threshold: float,
 ) -> str | None:
     if abs(current_leverage) <= EPSILON:
         return None
@@ -755,12 +764,12 @@ def _exit_reason(
     close = _as_float(row.get("close"))
     ema20 = _as_float(row.get("ema_20"))
     if current_leverage > 0:
-        if score <= 0.35:
+        if score <= exit_threshold:
             return "exit: score faded"
         if close < ema20:
             return "exit: close below ema20"
     if current_leverage < 0:
-        if score >= -0.35:
+        if score >= -exit_threshold:
             return "exit: score faded"
         if close > ema20:
             return "exit: close above ema20"
@@ -785,7 +794,9 @@ def _target_leverage(
 ) -> float:
     if max_drawdown >= 0.08:
         return 0.0
-    score_scale = _clamp((abs(score) - params.entry_threshold) / (2.25 - 1.25), 0.0, 1.0)
+    # Ramp position size from 0 at the entry threshold to full over the next 1.0
+    # of score, so a lower entry threshold still sizes small near the boundary.
+    score_scale = _clamp((abs(score) - params.entry_threshold) / 1.0, 0.0, 1.0)
     drawdown_scale = _drawdown_scale(max_drawdown)
     vol_scale = _vol_scale(symbol, rv_1h_equiv)
     normal_cap = min(NORMAL_SYMBOL_LEVERAGE_CAP[symbol], params.max_symbol_leverage)
@@ -1036,11 +1047,17 @@ def _load_position_targets(
     return leverage, volume
 
 
-def _feature_payload(row: Mapping[str, Any], score: float) -> dict[str, Any]:
+def _feature_payload(
+    row: Mapping[str, Any],
+    score: float,
+    *,
+    entry_threshold: float,
+    exit_threshold: float,
+) -> dict[str, Any]:
     payload = {str(key): _json_safe(value) for key, value in row.items()}
     payload["strategy_score"] = score
-    payload["entry_threshold"] = 1.25
-    payload["exit_threshold"] = 0.35
+    payload["entry_threshold"] = float(entry_threshold)
+    payload["exit_threshold"] = float(exit_threshold)
     return payload
 
 

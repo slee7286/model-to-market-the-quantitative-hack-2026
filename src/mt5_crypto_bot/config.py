@@ -28,6 +28,8 @@ ENV_FIELD_MAP: dict[str, str] = {
     "target_symbols": "TARGET_SYMBOLS",
     "bot_magic": "BOT_MAGIC",
     "strategy_version": "STRATEGY_VERSION",
+    "entry_threshold": "ENTRY_THRESHOLD",
+    "exit_threshold": "EXIT_THRESHOLD",
     "database_url": "DATABASE_URL",
     "postgres_uri": "POSTGRES_URI",
     "parquet_dir": "PARQUET_DIR",
@@ -67,6 +69,11 @@ class BotConfig(StrictBaseModel):
     target_symbols: tuple[str, ...] = ALLOWED_SYMBOLS
     bot_magic: int = Field(default=20260621, ge=0)
     strategy_version: str = DEFAULT_STRATEGY_VERSION
+
+    # Trade-frequency tuning. Defaults mirror StrategyParams; override via
+    # ENTRY_THRESHOLD / EXIT_THRESHOLD to trade more or less often without code edits.
+    entry_threshold: float = Field(default=0.15, gt=0)
+    exit_threshold: float = Field(default=0.05, ge=0)
 
     database_url: str = DEFAULT_DATABASE_URL
     postgres_uri: SecretStr | None = None
@@ -141,12 +148,16 @@ class BotConfig(StrictBaseModel):
             raise ValueError("max_symbol_leverage cannot exceed max_gross_leverage")
         if self.daily_drawdown_stop > self.total_drawdown_stop:
             raise ValueError("daily_drawdown_stop cannot exceed total_drawdown_stop")
+        if self.exit_threshold >= self.entry_threshold:
+            raise ValueError("exit_threshold must be lower than entry_threshold")
         return self
 
     def strategy_params(self) -> StrategyParams:
         """Build strategy parameters from validated config risk caps."""
         return StrategyParams(
             strategy_version=self.strategy_version,
+            entry_threshold=self.entry_threshold,
+            exit_threshold=self.exit_threshold,
             max_gross_leverage=self.max_gross_leverage,
             max_symbol_leverage=self.max_symbol_leverage,
             max_margin_usage=self.max_margin_usage,

@@ -146,8 +146,11 @@ class StrategyParams(StrictBaseModel):
 
     strategy_version: str = DEFAULT_STRATEGY_VERSION
     signal_timeframe: str = "M5"
-    entry_threshold: float = Field(default=1.25, gt=0)
-    exit_threshold: float = Field(default=0.35, ge=0)
+    # Lowered from the research baseline (1.25 / 0.35) to trade far more often:
+    # most directionally-aligned M5 bars now clear the entry bar, and the narrow
+    # neutral band churns positions. See _candidate_side / _exit_reason in strategy.py.
+    entry_threshold: float = Field(default=0.15, gt=0)
+    exit_threshold: float = Field(default=0.05, ge=0)
     ema_fast: int = Field(default=20, gt=0)
     ema_slow: int = Field(default=80, gt=0)
     atr_period: int = Field(default=14, gt=0)
