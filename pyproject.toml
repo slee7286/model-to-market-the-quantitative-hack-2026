@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mt5-crypto-bot"
+version = "0.1.0"
+description = "Dry-run-first MT5 crypto trading bot scaffold for the Model to Market hackathon."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = { text = "Proprietary" }
+authors = [{ name = "Model to Market Hackathon Entrant" }]
+dependencies = [
+  "numpy>=1.26,<3",
+  "pandas>=2.2,<3",
+  "pydantic>=2.8,<3",
+  "pydantic-settings>=2.4,<3",
+  "python-dotenv>=1.0.1,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<9",
+  "ruff>=0.6,<1",
+]
+mt5 = [
+  "MetaTrader5>=5.0.45,<6; platform_system == 'Windows'",
+]
+data = [
+  "pyarrow>=16,<23",
+]
+postgres = [
+  "psycopg[binary]>=3.2,<4",
+]
+observability = [
+  "logfire>=2,<5",
+]
+
+[project.scripts]
+mt5-crypto-bot = "mt5_crypto_bot.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mt5_crypto_bot"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
