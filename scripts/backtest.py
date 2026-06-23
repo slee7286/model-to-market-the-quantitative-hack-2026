@@ -108,7 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValidationError, ValueError) as exc:
         print("Backtest configuration validation failed.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        print("Use only BAR/USD, BTC/USD, ETH/USD, SOL/USD, and XRP/USD.", file=sys.stderr)
+        print("Use only the active FX/crypto symbols from rules.md and constants.py.", file=sys.stderr)
         return 2
     except BacktestDataError as exc:
         if not args.allow_fixture_fallback:

@@ -80,7 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError as exc:
         print("Strategy configuration validation failed.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        print("Use dry_run mode and only allowed crypto symbols.", file=sys.stderr)
+        print("Use dry_run mode and only allowed FX/crypto symbols.", file=sys.stderr)
         return 2
     except (ValueError, StrategyEngineError) as exc:
         print("Strategy dry-run cycle failed.", file=sys.stderr)

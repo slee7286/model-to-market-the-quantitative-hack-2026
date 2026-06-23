@@ -3,7 +3,7 @@
 The collector deliberately uses market-data and account-inspection APIs only.
 It never constructs orders and never calls MT5 order functions. Broker symbols
 must come from ``config/symbol_map.json`` so canonical symbols stay constrained
-to the allowed crypto set.
+to the allowed instrument set.
 """
 
 from __future__ import annotations
@@ -47,9 +47,9 @@ TIMEFRAME_ATTRIBUTE_BY_NAME: dict[str, str] = {
     "M5": "TIMEFRAME_M5",
 }
 
-# Enforce the broker-reported maximum order volume. The connected account
-# rejects larger order sizes, so keep local metadata capped at the broker limit.
-VOLUME_MAX_OVERRIDE: float | None = 100.0
+# Use the broker-reported maximum order volume. A fixed local override made the
+# bot treat 100 lots as a position cap even when the account can hold more.
+VOLUME_MAX_OVERRIDE: float | None = None
 
 METADATA_FIELDS: tuple[str, ...] = (
     "digits",
@@ -208,7 +208,7 @@ def load_confirmed_symbol_map(
             + ". Run scripts/bootstrap_symbols.py and manually resolve ambiguous entries."
         )
     if not mapping:
-        raise SymbolMapError("symbol map did not yield any confirmed allowed crypto mappings")
+        raise SymbolMapError("symbol map did not yield any confirmed allowed instrument mappings")
     return mapping
 
 

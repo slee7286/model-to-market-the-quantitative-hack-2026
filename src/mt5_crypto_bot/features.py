@@ -1,4 +1,4 @@
-"""Deterministic feature engineering for completed crypto bar snapshots.
+"""Deterministic feature engineering for completed FX/crypto bar snapshots.
 
 The feature layer is read-only. It consumes stored bars, ticks, and optional
 order-book snapshots, then emits one row per canonical symbol and completed M5
@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from mt5_crypto_bot.constants import ALLOWED_SYMBOLS, DEFAULT_DATABASE_URL
+from mt5_crypto_bot.constants import ALLOWED_SYMBOLS, CRYPTO_SYMBOLS, DEFAULT_DATABASE_URL
 from mt5_crypto_bot.schemas import normalize_symbol, normalize_symbols
 from mt5_crypto_bot.storage import SQLiteStore, parse_sqlite_path
 
@@ -34,10 +34,18 @@ EPSILON = 1e-12
 BTC_SYMBOL = "BTC/USD"
 
 SHOCK_FLOORS: dict[str, float] = {
+    "AUD/USD": 0.0030,
     "BAR/USD": 0.0150,
     "BTC/USD": 0.0075,
+    "EUR/CHF": 0.0025,
+    "EUR/GBP": 0.0025,
+    "EUR/USD": 0.0025,
     "ETH/USD": 0.0075,
+    "GBP/USD": 0.0035,
     "SOL/USD": 0.0125,
+    "USD/CAD": 0.0030,
+    "USD/CHF": 0.0030,
+    "USD/JPY": 0.0030,
     "XRP/USD": 0.0125,
 }
 
@@ -123,7 +131,7 @@ def compute_feature_snapshots(
     ]
     features = pd.concat(per_symbol, ignore_index=True)
     features = _attach_higher_timeframe_context(features, bars_frame, feature_config, symbols)
-    features = _attach_tick_features(features, ticks, symbols)
+    features = _attach_tick_features(features, ticks, symbols, now_utc=now_utc)
     features = _attach_order_book_features(features, order_book_snapshots, symbols)
     features = _attach_btc_context_and_relative_strength(features, symbols, feature_config)
     features = _compute_final_scores(features, feature_config)
@@ -509,6 +517,8 @@ def _attach_tick_features(
     features: pd.DataFrame,
     ticks: pd.DataFrame | Iterable[Mapping[str, Any]] | None,
     symbols: tuple[str, ...],
+    *,
+    now_utc: datetime | None = None,
 ) -> pd.DataFrame:
     output = features.copy()
     tick_frame = _ticks_to_frame(ticks, symbols)
@@ -526,9 +536,34 @@ def _attach_tick_features(
         right_time_column="tick_time_utc",
         value_columns=tick_columns,
     )
-    output["tick_age_seconds"] = (
-        output["feature_time_utc"] - output["tick_time_utc"]
-    ).dt.total_seconds()
+    if now_utc is not None:
+        now = _to_utc_timestamp(now_utc)
+        eligible_ticks = tick_frame[tick_frame["tick_time_utc"] <= now].copy()
+        if not eligible_ticks.empty:
+            latest_ticks = (
+                eligible_ticks.sort_values(["symbol", "tick_time_utc"])
+                .groupby("symbol", as_index=False, sort=False)
+                .tail(1)
+                .set_index("symbol")
+            )
+            latest_indices = output.sort_values(["symbol", "feature_time_utc"]).groupby(
+                "symbol",
+                sort=False,
+            ).tail(1).index
+            for index in latest_indices:
+                symbol = output.at[index, "symbol"]
+                if symbol not in latest_ticks.index:
+                    continue
+                latest_tick = latest_ticks.loc[symbol]
+                current_tick_time = output.at[index, "tick_time_utc"]
+                if pd.notna(current_tick_time) and current_tick_time >= latest_tick["tick_time_utc"]:
+                    continue
+                for column in tick_columns:
+                    output.at[index, column] = latest_tick[column]
+        age_reference = pd.Series(now, index=output.index)
+    else:
+        age_reference = output["feature_time_utc"]
+    output["tick_age_seconds"] = (age_reference - output["tick_time_utc"]).dt.total_seconds()
     output.loc[output["tick_age_seconds"] < 0, "tick_age_seconds"] = np.nan
     return output
 
@@ -698,10 +733,11 @@ def _compute_final_scores(features: pd.DataFrame, config: FeatureConfig) -> pd.D
         default=0.0,
     )
     output["trend_score"] = score_base + 0.05 * output["volume_confirmation"]
+    crypto_relative_symbols = set(CRYPTO_SYMBOLS) - {BTC_SYMBOL}
     output["final_score_raw"] = np.where(
-        output["symbol"] == BTC_SYMBOL,
-        output["trend_score"],
+        output["symbol"].isin(crypto_relative_symbols),
         0.75 * output["trend_score"] + 0.25 * output["relative_score"].fillna(0.0),
+        output["trend_score"],
     )
     output["shadow_final_score"] = _book_adjusted_score(
         output["final_score_raw"],

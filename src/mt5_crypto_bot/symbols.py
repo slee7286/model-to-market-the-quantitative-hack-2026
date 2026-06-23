@@ -242,7 +242,8 @@ def build_symbol_map(
         "source": "MT5 symbols_get",
         "allowed_canonical_symbols": list(ALLOWED_SYMBOLS),
         "notes": [
-            "Canonical symbols must remain BAR/USD, BTC/USD, ETH/USD, SOL/USD, XRP/USD.",
+            "Canonical symbols must remain within the rules.md FX+crypto allow-list.",
+            "Metals are allowed by rules.md but intentionally excluded from this build.",
             BAR_USD_DESCRIPTION,
             "Only entries with status=confirmed are eligible for metadata capture.",
             "Ambiguous or missing entries require manual review in MT5 Market Watch.",
@@ -310,7 +311,9 @@ def score_symbol_candidate(canonical_symbol: str, raw_symbol: dict[str, Any]) ->
     if not name:
         return 0, []
 
+    base, quote = canonical_symbol.split("/")
     aliases = canonical_aliases(canonical_symbol)
+    quote_code = compact(quote)
     compact_name = compact(name)
     upper_name = name.upper()
     currency_base = compact(raw_symbol.get("currency_base"))
@@ -325,27 +328,27 @@ def score_symbol_candidate(canonical_symbol: str, raw_symbol: dict[str, Any]) ->
 
     score = 0
     reasons: list[str] = []
-    expected_compacts = [f"{alias}USD" for alias in aliases]
+    expected_compacts = [f"{alias}{quote_code}" for alias in aliases]
 
     if upper_name == canonical_symbol or compact_name in expected_compacts:
         score = max(score, 100)
-        reasons.append("exact symbol/name match to canonical base and USD quote")
+        reasons.append("exact symbol/name match to canonical base and quote")
 
     for expected in expected_compacts:
         if compact_name.startswith(expected) and compact_name != expected:
             score = max(score, 85)
-            reasons.append("broker symbol starts with canonical base and USD quote")
+            reasons.append("broker symbol starts with canonical base and quote")
 
-    if currency_base in aliases and currency_profit == "USD":
+    if currency_base in aliases and currency_profit == quote_code:
         score = max(score, 95)
         reasons.append("currency_base and currency_profit match canonical pair")
-    elif currency_base in aliases and currency_margin == "USD":
+    elif currency_base in aliases and currency_margin == quote_code:
         score = max(score, 80)
         reasons.append("currency_base and currency_margin match canonical pair")
 
-    if any(alias in compact_text for alias in aliases) and "USD" in compact_text:
+    if any(alias in compact_text for alias in aliases) and quote_code in compact_text:
         score = max(score, 60)
-        reasons.append("symbol text contains canonical base alias and USD")
+        reasons.append("symbol text contains canonical base alias and quote")
 
     if canonical_symbol == "BAR/USD":
         if "HBAR" in compact_text or "HEDERA" in compact_text:
@@ -360,10 +363,18 @@ def score_symbol_candidate(canonical_symbol: str, raw_symbol: dict[str, Any]) ->
 def canonical_aliases(canonical_symbol: str) -> tuple[str, ...]:
     """Return broker-name aliases for a canonical allowed symbol."""
     aliases: dict[str, tuple[str, ...]] = {
+        "AUD/USD": ("AUD",),
         "BAR/USD": ("HBAR", "BAR"),
         "BTC/USD": ("BTC", "XBT"),
+        "EUR/CHF": ("EUR",),
+        "EUR/GBP": ("EUR",),
+        "EUR/USD": ("EUR",),
         "ETH/USD": ("ETH",),
+        "GBP/USD": ("GBP",),
         "SOL/USD": ("SOL",),
+        "USD/CAD": ("USD",),
+        "USD/CHF": ("USD",),
+        "USD/JPY": ("USD",),
         "XRP/USD": ("XRP",),
     }
     return aliases[canonical_symbol]

@@ -1,4 +1,4 @@
-"""Safe continuous-improvement orchestration for the MT5 crypto bot.
+"""Safe continuous-improvement orchestration for the MT5 FX/crypto bot.
 
 The loop is deliberately offline and approval-gated. It reads the local audit
 database, writes reports and inactive proposals, and never connects to MT5,
@@ -339,8 +339,8 @@ def _render_improvement_markdown(report: ContinuousImprovementReport) -> str:
         "- No `order_check`, `order_send`, or live order placement can happen in this loop.",
         "- No `.env`, approval file, or live runner setting was modified.",
         "- Strategy changes are written only as inactive candidates and require manual approval.",
-        "- Allowed instruments remain `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`.",
-        "- Current sprint entry universe is `BTC/USD`, `ETH/USD`, and `SOL/USD`; BAR/XRP data is still collected for audit and future review.",
+        "- Allowed instruments remain the active 13-symbol FX/crypto universe from `rules.md` and `constants.py`.",
+        "- All 13 active FX/crypto instruments can generate fresh entries when validation gates pass.",
         "",
         "## Best Operating Pattern",
         "",

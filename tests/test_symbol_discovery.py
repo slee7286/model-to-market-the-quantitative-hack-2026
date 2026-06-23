@@ -188,6 +188,29 @@ class SymbolDiscoveryTests(unittest.TestCase):
         reasons = " ".join(payload["symbols"]["BAR/USD"]["candidates"][0]["reasons"])
         self.assertIn("HBAR/Hedera", reasons)
 
+    def test_forex_cross_can_match_non_usd_quote(self) -> None:
+        raw_symbols = [
+            make_symbol(
+                "EURCHF",
+                description="Euro vs Swiss Franc",
+                path="Forex\\EURCHF",
+                currency_base="EUR",
+                currency_profit="CHF",
+                currency_margin="EUR",
+            ).__dict__
+        ]
+
+        payload = build_symbol_map(
+            raw_symbols,
+            {},
+            generated_at_utc=datetime.now(timezone.utc),
+        )
+
+        self.assertEqual(payload["canonical_to_broker"]["EUR/CHF"], "EURCHF")
+        self.assertEqual(payload["symbols"]["EUR/CHF"]["status"], "confirmed")
+        reasons = " ".join(payload["symbols"]["EUR/CHF"]["candidates"][0]["reasons"])
+        self.assertIn("canonical base and quote", reasons)
+
     def test_invalid_manual_mapping_to_unsupported_symbol_is_not_confirmed(self) -> None:
         raw_symbols = [
             make_symbol("BTCUSD", currency_base="BTC").__dict__,

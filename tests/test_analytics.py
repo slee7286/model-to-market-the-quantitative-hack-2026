@@ -108,8 +108,8 @@ class AnalyticsTests(unittest.TestCase):
                 self.assertIsNone(row["approved_at_utc"])
                 params = json.loads(row["params_json"])
                 self.assertTrue(params["requires_manual_approval"])
-                self.assertLessEqual(params["max_gross_leverage"], 27.0)
-                self.assertLessEqual(params["max_symbol_leverage"], 27.0)
+                self.assertLessEqual(params["max_gross_leverage"], 28.0)
+                self.assertLessEqual(params["max_symbol_leverage"], 28.0)
                 self.assertLessEqual(params["max_margin_usage"], 0.90)
 
     def test_signal_score_buckets_are_stable(self) -> None:

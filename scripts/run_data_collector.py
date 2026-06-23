@@ -41,7 +41,7 @@ from mt5_crypto_bot.symbols import DEFAULT_SYMBOL_MAP_PATH
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collect read-only MT5 market data for confirmed allowed crypto symbols. "
+            "Collect read-only MT5 market data for confirmed allowed FX/crypto symbols. "
             "No orders are placed and order_send is never called."
         )
     )
@@ -158,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError as exc:
         print("Configuration validation failed before MT5 was contacted.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        print("Keep TRADE_MODE=dry_run and use only allowed crypto symbols.", file=sys.stderr)
+        print("Keep TRADE_MODE=dry_run and use only allowed FX/crypto symbols.", file=sys.stderr)
         return 2
     except SymbolMapError as exc:
         print("Symbol map check failed before MT5 was contacted.", file=sys.stderr)

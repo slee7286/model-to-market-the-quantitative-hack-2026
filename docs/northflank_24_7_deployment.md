@@ -1,13 +1,13 @@
 # Northflank 24/7 Deployment Plan
 
-This document records the intended final deployment direction for the MT5 crypto bot. It should be treated as the planning handoff for Prompt 23 in `codex_mt5_crypto_implementation_playbook.md`.
+This document records the intended final deployment direction for the MT5 FX/crypto bot. It should be treated as the planning handoff for Prompt 23 in `codex_mt5_crypto_implementation_playbook.md`.
 
 ## Objective
 
 Run the bot 24/7 without relying on the user's laptop staying open, while preserving:
 
 - `rules.md` as the highest-priority source of truth;
-- the five-symbol allow-list: `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, `XRP/USD`;
+- the active 13-symbol FX/crypto allow-list: `AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`, `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, `XRP/USD`;
 - conservative polling;
 - approval-gated live execution;
 - no fully autonomous live parameter changes;

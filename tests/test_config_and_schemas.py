@@ -39,8 +39,8 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(config.target_symbols, ALLOWED_SYMBOLS)
         self.assertEqual(config.entry_threshold, 1.25)
         self.assertEqual(config.exit_threshold, 0.75)
-        self.assertEqual(config.max_gross_leverage, 27.0)
-        self.assertEqual(config.max_symbol_leverage, 27.0)
+        self.assertEqual(config.max_gross_leverage, 28.0)
+        self.assertEqual(config.max_symbol_leverage, 28.0)
         self.assertEqual(config.max_margin_usage, 0.90)
         self.assertIsNone(config.mt5_login)
         self.assertIsNone(config.mt5_password)
@@ -105,8 +105,8 @@ class SchemaValidationTests(unittest.TestCase):
         self.assertEqual(params.strategy_version, "momo_v1")
         self.assertEqual(params.entry_threshold, 1.25)
         self.assertEqual(params.exit_threshold, 0.75)
-        self.assertEqual(params.max_gross_leverage, 27.0)
-        self.assertEqual(params.max_symbol_leverage, 27.0)
+        self.assertEqual(params.max_gross_leverage, 28.0)
+        self.assertEqual(params.max_symbol_leverage, 28.0)
         self.assertEqual(params.max_margin_usage, 0.90)
 
         with self.assertRaises(ValidationError):
@@ -131,7 +131,7 @@ class SchemaValidationTests(unittest.TestCase):
         risk_check = RiskCheck(
             checked_at_utc=now,
             passed=True,
-            symbol="ETH/USD",
+            symbol="EUR/USD",
             margin_usage=0.1,
             gross_leverage=1.0,
         )
@@ -174,7 +174,7 @@ class SchemaValidationTests(unittest.TestCase):
             OrderIntent(
                 client_order_id="bad-order",
                 created_at_utc=now,
-                symbol="EUR/USD",
+                symbol="DOGE/USD",
                 side=OrderSide.BUY,
                 requested_volume=1.0,
             )

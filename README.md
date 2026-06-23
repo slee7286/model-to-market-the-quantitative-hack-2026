@@ -1,9 +1,17 @@
-# MT5 Crypto Bot
+# MT5 FX/Crypto Bot
 
-Dry-run-first, guarded-live-capable Python bot for the Model to Market hackathon crypto competition.
+Dry-run-first, guarded-live-capable Python bot for the Model to Market hackathon trading competition.
 
-The project is constrained to the allowed crypto instruments from `rules.md`:
+The active integrated build is constrained to these `rules.md`-allowed FX and crypto instruments only. Metals are allowed by the rulebook, but intentionally excluded from this implementation:
 
+- `AUD/USD`
+- `EUR/CHF`
+- `EUR/GBP`
+- `EUR/USD`
+- `GBP/USD`
+- `USD/CAD`
+- `USD/CHF`
+- `USD/JPY`
 - `BAR/USD` as HBAR/Hedera per `information.md`
 - `BTC/USD`
 - `ETH/USD`
@@ -75,7 +83,7 @@ The script uses read-only MT5 calls only: initialize, login, terminal info, acco
 
 ## Symbol Discovery And Broker Mapping
 
-After the read-only MT5 connection check succeeds, discover the broker's crypto symbol names:
+After the read-only MT5 connection check succeeds, discover the broker's FX and crypto symbol names:
 
 ```powershell
 python scripts/bootstrap_symbols.py
@@ -85,6 +93,14 @@ The bootstrap script uses read-only MT5 calls only: initialize, login, `symbols_
 `symbol_info`, last error, and shutdown. It only attempts to map these canonical
 symbols:
 
+- `AUD/USD`
+- `EUR/CHF`
+- `EUR/GBP`
+- `EUR/USD`
+- `GBP/USD`
+- `USD/CAD`
+- `USD/CHF`
+- `USD/JPY`
 - `BAR/USD` as HBAR/Hedera per `information.md`
 - `BTC/USD`
 - `ETH/USD`
@@ -104,10 +120,18 @@ MT5 Market Watch and edit only the relevant broker symbol value, for example:
 ```json
 {
   "canonical_to_broker": {
+    "AUD/USD": "AUDUSD",
     "BAR/USD": "HBARUSD",
     "BTC/USD": "BTCUSD",
+    "EUR/CHF": "EURCHF",
+    "EUR/GBP": "EURGBP",
+    "EUR/USD": "EURUSD",
     "ETH/USD": "ETHUSD",
+    "GBP/USD": "GBPUSD",
     "SOL/USD": "SOLUSD",
+    "USD/CAD": "USDCAD",
+    "USD/CHF": "USDCHF",
+    "USD/JPY": "USDJPY",
     "XRP/USD": "XRPUSD"
   }
 }
@@ -121,7 +145,7 @@ python scripts/bootstrap_symbols.py
 
 The rerun validates that each manual broker symbol is available from MT5 and still
 conservatively matches the intended canonical instrument before writing metadata.
-Do not add symbols outside the five allowed crypto instruments.
+Do not add symbols outside the integrated FX/crypto allow-list above.
 
 ## Local Storage
 
@@ -165,7 +189,7 @@ python scripts/run_data_collector.py --minutes 10 --poll-seconds 5
 
 The collector:
 
-- reads only the allowed canonical crypto symbols configured in `TARGET_SYMBOLS`;
+- reads only the allowed canonical FX/crypto symbols configured in `TARGET_SYMBOLS`;
 - requires each broker mapping to be present and confirmed when bootstrap status
   data is available;
 - collects M1 and M5 bars with `copy_rates_from`;
@@ -188,7 +212,7 @@ python scripts/run_data_collector.py `
 ```
 
 `--poll-seconds` is constrained to at least 5 seconds to keep polling comfortably
-below the `rules.md` API-abuse safe harbor. With all five symbols enabled, the
+below the `rules.md` API-abuse safe harbor. With all 13 symbols enabled, the
 default cycle is tens of MT5 read-only calls every five seconds, far below 500
 requests per second.
 
@@ -270,7 +294,7 @@ approved_orders = result.approved_orders
 The risk engine stores every `RiskCheck` in SQLite and blocks missing or unsafe
 state by default. It checks:
 
-- allowed crypto symbols only;
+- allowed FX/crypto symbols only;
 - stale ticks and stale strategy feature timestamps;
 - spread bps against the frozen symbol caps;
 - gross leverage, per-symbol leverage, margin usage, concentration, and net
@@ -281,12 +305,26 @@ state by default. It checks:
 - local kill switch state.
 
 The current aggressive competition profile blocks projected gross leverage above
-`27x` and projected margin usage above `90%`. This sits below the 30x account
-maximum and below the rules' leverage penalty band that begins above 28x. The
+`28x` and projected margin usage above `90%`. This sits below the 30x account
+maximum; on a 30x account the margin guard can bind before the full 28x gross
+target is reached. The
 strategy no longer uses low per-symbol leverage clamps; concentration and net
 direction are still tracked against the `rules.md` time-based discipline bands,
 while drawdown and Sharpe are not optimization targets for the qualification
 PnL sprint.
+
+When there is exactly one fresh high-conviction entry, the strategy may emit a metadata-tagged discipline-ballast
+order first: roughly 11% opposite-direction exposure in another eligible
+low-spread symbol, paired with an 89% main leg. This preserves intended gross
+exposure while reducing single-instrument and net-direction concentration; it
+does not bypass freshness, spread, margin, leverage, stop-distance, kill-switch,
+or live-approval checks.
+
+Broker `volume_max` metadata is treated as a maximum submitted order size, not
+as a maximum aggregate position size. If a target position or settlement close
+requires more than the broker's per-order maximum, the bot splits it into
+multiple order intents capped at `volume_max` instead of shrinking the desired
+holding to 100 units.
 
 Print current MT5 account and risk state with read-only MT5 calls:
 
@@ -460,19 +498,11 @@ The proposal loop does not automatically increase `risk_per_trade`, gross
 leverage, symbol leverage, or margin usage. Proposed rows are stored in
 `strategy_versions` with `active=0`, no approver, and no approval timestamp.
 
-Current PnL-sprint live baseline through the 2026-06-24 22:00 BST qualification
-cutoff is `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.75`. Stored signal replay
-scored by return only favored this pair over `1.25 / 0.50`. The live sizing
-envelope remains a 27x gross-leverage cap with a 90% margin-usage cap. Live
-approval gates remain unchanged.
-
-Latest collected-data replay favors opening/adding exposure only on
-`BTC/USD`, `ETH/USD`, and `SOL/USD` for this sprint. `BAR/USD` and `XRP/USD`
-remain in the allowed collection/audit universe, and any existing exposure can
-still be exited, but fresh BAR/XRP entries are blocked by default until later
-data justifies re-enabling them. In the stored replay this changed `momo_v1`
-from about `-11.4%` across all five symbols to about `+27.1%` on the
-BTC/ETH/SOL sprint entry set.
+Current integrated live baseline is `ENTRY_THRESHOLD=1.25` and
+`EXIT_THRESHOLD=0.75`. The live sizing envelope is a 28x gross-leverage cap
+with a 90% margin-usage cap. All 13 FX/crypto instruments can open/add exposure
+when their signal, spread, liquidity, metadata, freshness, stop, margin, and
+risk checks pass. Live approval gates remain unchanged.
 
 Manual approval workflow:
 
@@ -550,7 +580,7 @@ The final playbook prompt is Prompt 23: Northflank 24/7 deployment. It should ad
 ## Safety Notes
 
 - `rules.md` is the highest-priority source of truth.
-- Only the five allowed crypto instruments may be enabled.
+- Only the 13 active FX/crypto instruments may be enabled.
 - API polling must stay comfortably below the safe-harbor threshold in `rules.md`.
 - Sponsor integrations are optional and must not sit in the blocking execution path.
 - LLM outputs may summarize or propose ideas, but must not directly control live trading.

@@ -20,7 +20,11 @@ import pandas as pd
 
 from mt5_crypto_bot.constants import (
     ALLOWED_SYMBOLS,
+    CRYPTO_SYMBOLS,
     DEFAULT_DATABASE_URL,
+    DISCIPLINE_BALLAST_MAIN_SHARE,
+    DISCIPLINE_BALLAST_MIN_TRIGGER_LEVERAGE,
+    FOREX_SYMBOLS,
     PNL_SPRINT_ENTRY_SYMBOLS,
 )
 from mt5_crypto_bot.features import (
@@ -36,30 +40,55 @@ INITIAL_EQUITY = 1_000_000.0
 EPSILON = 1e-12
 
 SPREAD_CAP_BPS: dict[str, float] = {
+    "AUD/USD": 3.0,
     "BAR/USD": 25.0,
     "BTC/USD": 8.0,
+    "EUR/CHF": 4.0,
+    "EUR/GBP": 3.0,
+    "EUR/USD": 2.0,
     "ETH/USD": 8.0,
+    "GBP/USD": 3.0,
     "SOL/USD": 15.0,
+    "USD/CAD": 3.0,
+    "USD/CHF": 3.0,
+    "USD/JPY": 2.0,
     "XRP/USD": 15.0,
 }
 
 DEFAULT_SPREAD_BPS: dict[str, float] = {
+    "AUD/USD": 1.2,
     "BAR/USD": 15.0,
     "BTC/USD": 4.0,
+    "EUR/CHF": 1.6,
+    "EUR/GBP": 1.2,
+    "EUR/USD": 0.8,
     "ETH/USD": 5.0,
+    "GBP/USD": 1.2,
     "SOL/USD": 8.0,
+    "USD/CAD": 1.2,
+    "USD/CHF": 1.2,
+    "USD/JPY": 0.9,
     "XRP/USD": 8.0,
 }
 
 SLIPPAGE_BPS: dict[str, float] = {
+    "AUD/USD": 0.2,
     "BAR/USD": 5.0,
     "BTC/USD": 1.5,
+    "EUR/CHF": 0.25,
+    "EUR/GBP": 0.2,
+    "EUR/USD": 0.15,
     "ETH/USD": 2.0,
+    "GBP/USD": 0.25,
     "SOL/USD": 3.5,
+    "USD/CAD": 0.2,
+    "USD/CHF": 0.2,
+    "USD/JPY": 0.15,
     "XRP/USD": 3.5,
 }
 
 NORMAL_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
+    **{symbol: 28.00 for symbol in FOREX_SYMBOLS},
     "BAR/USD": 27.00,
     "BTC/USD": 27.00,
     "ETH/USD": 27.00,
@@ -68,6 +97,7 @@ NORMAL_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
 }
 
 HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
+    **{symbol: 28.00 for symbol in FOREX_SYMBOLS},
     "BAR/USD": 27.00,
     "BTC/USD": 27.00,
     "ETH/USD": 27.00,
@@ -76,18 +106,34 @@ HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
 }
 
 TARGET_RV_1H: dict[str, float] = {
+    "AUD/USD": 0.0012,
     "BAR/USD": 0.0070,
     "BTC/USD": 0.0080,
+    "EUR/CHF": 0.0007,
+    "EUR/GBP": 0.0008,
+    "EUR/USD": 0.0009,
     "ETH/USD": 0.0085,
+    "GBP/USD": 0.0011,
     "SOL/USD": 0.0110,
+    "USD/CAD": 0.0009,
+    "USD/CHF": 0.0009,
+    "USD/JPY": 0.0010,
     "XRP/USD": 0.0100,
 }
 
 VOLATILITY_FLOOR: dict[str, float] = {
+    "AUD/USD": 0.00035,
     "BAR/USD": 0.0030,
     "BTC/USD": 0.0025,
+    "EUR/CHF": 0.00025,
+    "EUR/GBP": 0.00025,
+    "EUR/USD": 0.00030,
     "ETH/USD": 0.0025,
+    "GBP/USD": 0.00035,
     "SOL/USD": 0.0035,
+    "USD/CAD": 0.00030,
+    "USD/CHF": 0.00030,
+    "USD/JPY": 0.00030,
     "XRP/USD": 0.0035,
 }
 
@@ -103,7 +149,7 @@ class BacktestConfig:
     initial_equity: float = INITIAL_EQUITY
     entry_threshold: float = 1.25
     exit_threshold: float = 0.75
-    max_gross_leverage: float = 27.0
+    max_gross_leverage: float = 28.0
     target_gross_leverage: float = 24.0
     max_margin_usage: float = 0.90
     sharpe_rule_min_observations: int = 8
@@ -333,17 +379,33 @@ def make_synthetic_fixture_market_data(
     canonical_symbols = normalize_symbols(symbols)
     start = start_utc or datetime(2026, 6, 22, 0, 0, tzinfo=timezone.utc)
     bases = {
+        "AUD/USD": 0.66,
         "BAR/USD": 0.18,
         "BTC/USD": 65_000.0,
+        "EUR/CHF": 0.94,
+        "EUR/GBP": 0.84,
+        "EUR/USD": 1.08,
         "ETH/USD": 3_500.0,
+        "GBP/USD": 1.27,
         "SOL/USD": 145.0,
+        "USD/CAD": 1.36,
+        "USD/CHF": 0.88,
+        "USD/JPY": 157.0,
         "XRP/USD": 0.55,
     }
     betas = {
+        "AUD/USD": 0.22,
         "BAR/USD": 1.15,
         "BTC/USD": 1.00,
+        "EUR/CHF": 0.10,
+        "EUR/GBP": 0.12,
+        "EUR/USD": 0.16,
         "ETH/USD": 1.10,
+        "GBP/USD": 0.18,
         "SOL/USD": 1.45,
+        "USD/CAD": -0.14,
+        "USD/CHF": -0.12,
+        "USD/JPY": 0.20,
         "XRP/USD": 0.95,
     }
 
@@ -436,6 +498,7 @@ def _run_single_strategy(
     ]
     ledger = pd.concat(ledgers, ignore_index=True)
     ledger = ledger.sort_values(["feature_time_utc", "symbol"]).reset_index(drop=True)
+    ledger = _apply_discipline_ballast_targets(ledger, spec)
     ledger = _apply_portfolio_gross_cap(ledger, config.max_gross_leverage)
     ledger["net_return"] = ledger["gross_return"] - ledger["cost_return"]
 
@@ -564,6 +627,55 @@ def _apply_portfolio_gross_cap(ledger: pd.DataFrame, max_gross_leverage: float) 
         capped.loc[scaled, "target_reason"].astype(str) + "; portfolio gross cap scaled"
     )
     return _recompute_ledger_from_targets(capped)
+
+
+def _apply_discipline_ballast_targets(
+    ledger: pd.DataFrame,
+    spec: StrategySpec,
+) -> pd.DataFrame:
+    """Approximate live discipline ballast in offline MVP target vectors."""
+
+    if spec.kind != "mvp" or ledger.empty:
+        return ledger
+    adjusted = ledger.copy()
+    for _, group in adjusted.groupby("feature_time_utc", sort=True):
+        sprint_group = group[group["symbol"].isin(PNL_SPRINT_ENTRY_SYMBOLS)]
+        active = sprint_group[
+            sprint_group["target_leverage"].abs() >= DISCIPLINE_BALLAST_MIN_TRIGGER_LEVERAGE
+        ]
+        if len(active) != 1:
+            continue
+        main_idx = active.index[0]
+        main_symbol = str(adjusted.at[main_idx, "symbol"])
+        original_target = float(adjusted.at[main_idx, "target_leverage"])
+        candidates = sprint_group[
+            (sprint_group["symbol"] != main_symbol)
+            & (sprint_group["target_leverage"].abs() <= EPSILON)
+            & ~sprint_group["target_reason"].astype(str).str.startswith("flat:")
+        ].copy()
+        if candidates.empty:
+            continue
+        candidates["spread_sort"] = candidates["effective_spread_bps"].replace(
+            [np.inf, -np.inf],
+            np.nan,
+        ).fillna(math.inf)
+        ballast_idx = candidates.sort_values(["spread_sort", "symbol"]).index[0]
+        ballast_target = -math.copysign(
+            abs(original_target) * (1.0 - DISCIPLINE_BALLAST_MAIN_SHARE),
+            original_target,
+        )
+        adjusted.at[main_idx, "target_leverage"] = (
+            original_target * DISCIPLINE_BALLAST_MAIN_SHARE
+        )
+        adjusted.at[main_idx, "target_reason"] = (
+            str(adjusted.at[main_idx, "target_reason"])
+            + "; discipline ballast main share"
+        )
+        adjusted.at[ballast_idx, "target_leverage"] = ballast_target
+        adjusted.at[ballast_idx, "target_reason"] = (
+            f"discipline ballast for {main_symbol} concentration/net exposure"
+        )
+    return _recompute_ledger_from_targets(adjusted)
 
 
 def _recompute_ledger_from_targets(ledger: pd.DataFrame) -> pd.DataFrame:
@@ -701,7 +813,7 @@ def _short_gate(row: pd.Series, score: float, spec: StrategySpec) -> bool:
 
 def _btc_regime_gate(row: pd.Series, side: str) -> bool:
     symbol = str(row["symbol"])
-    if symbol == "BTC/USD":
+    if symbol == "BTC/USD" or symbol not in CRYPTO_SYMBOLS:
         return True
     btc_regime = str(row.get("btc_regime", "unknown"))
     btc_trend = _as_float(row.get("btc_trend_score"))
@@ -940,7 +1052,7 @@ def _render_markdown_report(
         "## Safety Scope",
         "",
         "- Offline backtest only; no MT5 connection, no order construction, no live orders.",
-        "- Allowed symbols only: `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, `XRP/USD`.",
+        "- Allowed symbols only: active FX/crypto symbols from `rules.md` and `constants.py`.",
         "- Signals are evaluated on completed M5 feature rows and executed on the next M5 open.",
         "- Costs subtract half-spread plus symbol-specific slippage on every notional turnover.",
         "",

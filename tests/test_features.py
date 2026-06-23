@@ -193,6 +193,31 @@ class FeatureEngineeringTests(unittest.TestCase):
         self.assertEqual(float(breakout["rolling_high_12"]), 100.0)
         self.assertEqual(float(breakout["donchian_12"]), 1.0)
 
+    def test_current_tick_after_latest_completed_bar_is_attached_for_live_context(self) -> None:
+        bars = make_m5_bars("EUR/USD", base=1.08)
+        now = START + timedelta(minutes=5 * len(bars), seconds=30)
+        latest_close = float(bars[-1]["close"])
+        ticks = [
+            {
+                "symbol": "EUR/USD",
+                "time_utc": now - timedelta(seconds=10),
+                "bid": latest_close - 0.00005,
+                "ask": latest_close + 0.00005,
+                "last": latest_close,
+            }
+        ]
+
+        features = compute_feature_snapshots(
+            bars,
+            ticks=ticks,
+            target_symbols=("EUR/USD",),
+            now_utc=now,
+        )
+        latest = latest_feature_snapshots(features).iloc[0]
+
+        self.assertTrue(math.isfinite(float(latest["spread_bps"])))
+        self.assertAlmostEqual(float(latest["tick_age_seconds"]), 10.0, delta=1.0)
+
     def test_store_load_and_csv_export(self) -> None:
         btc_bars = make_m5_bars("BTC/USD", base=10_000)
         eth_bars = make_m5_bars("ETH/USD", base=1_000)

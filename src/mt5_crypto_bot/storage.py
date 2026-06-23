@@ -35,7 +35,7 @@ from mt5_crypto_bot.schemas import (
 )
 
 
-SQLITE_SCHEMA_VERSION = 1
+SQLITE_SCHEMA_VERSION = 2
 DEFAULT_SQLITE_PATH = Path("data/trading.db")
 
 REQUIRED_TABLES: tuple[str, ...] = (
@@ -50,6 +50,18 @@ REQUIRED_TABLES: tuple[str, ...] = (
     "positions_snapshots",
     "account_snapshots",
     "strategy_versions",
+)
+
+SYMBOL_CHECK_TABLES: tuple[str, ...] = (
+    "symbol_metadata",
+    "bars",
+    "ticks",
+    "order_book_snapshots",
+    "signals",
+    "risk_checks",
+    "orders",
+    "fills",
+    "positions_snapshots",
 )
 
 
@@ -320,6 +332,8 @@ class SQLiteStore:
         """Create all storage tables and indexes idempotently."""
         connection = self.connection
         connection.executescript(SCHEMA_SQL)
+        self._migrate_symbol_check_constraints()
+        connection.executescript(SCHEMA_SQL)
         connection.execute(f"PRAGMA user_version = {SQLITE_SCHEMA_VERSION}")
         connection.execute(
             """
@@ -333,6 +347,67 @@ class SQLiteStore:
             ),
         )
         connection.commit()
+
+    def _migrate_symbol_check_constraints(self) -> None:
+        """Rebuild old symbol-constrained tables when the allow-list expands."""
+
+        for table in SYMBOL_CHECK_TABLES:
+            row = self.connection.execute(
+                """
+                SELECT sql
+                FROM sqlite_master
+                WHERE type = 'table' AND name = ?
+                """,
+                (table,),
+            ).fetchone()
+            if row is None:
+                continue
+            table_sql = str(row["sql"] or "")
+            if "symbol IN" not in table_sql:
+                continue
+            if all(symbol in table_sql for symbol in ALLOWED_SYMBOLS):
+                continue
+            self._rebuild_table_with_current_schema(table)
+
+    def _rebuild_table_with_current_schema(self, table: str) -> None:
+        """Copy a table into the current schema definition and swap it in."""
+
+        current_sql = _current_table_sql(table)
+        new_table = f"{table}__schema_v{SQLITE_SCHEMA_VERSION}_{uuid4().hex[:8]}"
+        create_sql = current_sql.replace(
+            f"CREATE TABLE {table}",
+            f"CREATE TABLE {quote_identifier(new_table)}",
+            1,
+        )
+        old_columns = _table_columns(self.connection, table)
+        self.connection.execute(create_sql)
+        new_columns = _table_columns(self.connection, new_table)
+        common_columns = [column for column in old_columns if column in new_columns]
+        if common_columns:
+            column_sql = ", ".join(quote_identifier(column) for column in common_columns)
+            self.connection.execute(
+                f"""
+                INSERT INTO {quote_identifier(new_table)} ({column_sql})
+                SELECT {column_sql}
+                FROM {quote_identifier(table)}
+                """
+            )
+        self.connection.execute(f"DROP TABLE {quote_identifier(table)}")
+        self.connection.execute(
+            f"ALTER TABLE {quote_identifier(new_table)} RENAME TO {quote_identifier(table)}"
+        )
+        self.connection.execute(
+            """
+            INSERT OR IGNORE INTO schema_migrations(version, applied_at_utc, description)
+            VALUES (?, ?, ?)
+            """,
+            (
+                SQLITE_SCHEMA_VERSION,
+                utc_now_iso(),
+                "Expanded SQLite symbol CHECK constraints for integrated FX/crypto universe.",
+            ),
+        )
+        self.connection.commit()
 
     def list_tables(self) -> set[str]:
         """Return user table names currently present in the database."""
@@ -1000,6 +1075,33 @@ def parse_sqlite_path(database_url: str | Path) -> str:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def quote_identifier(value: str) -> str:
+    """Quote a trusted SQLite identifier."""
+
+    return '"' + str(value).replace('"', '""') + '"'
+
+
+def _current_table_sql(table: str) -> str:
+    with sqlite3.connect(":memory:") as connection:
+        connection.executescript(SCHEMA_SQL)
+        row = connection.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table' AND name = ?
+            """,
+            (table,),
+        ).fetchone()
+    if row is None:
+        raise StorageError(f"current schema has no table definition for {table}")
+    return str(row[0])
+
+
+def _table_columns(connection: sqlite3.Connection, table: str) -> list[str]:
+    rows = connection.execute(f"PRAGMA table_info({quote_identifier(table)})").fetchall()
+    return [str(row[1]) for row in rows]
 
 
 def _utc_iso(value: Any) -> str:

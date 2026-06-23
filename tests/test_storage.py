@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -47,6 +48,69 @@ class SQLiteStorageTests(unittest.TestCase):
             store.close()
 
         self.assertTrue(set(REQUIRED_TABLES).issubset(tables))
+        self.assertEqual(user_version[0], SQLITE_SCHEMA_VERSION)
+
+    def test_existing_five_symbol_schema_migrates_to_fx_crypto_allow_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trading.db"
+            old_allowed = "'BAR/USD', 'BTC/USD', 'ETH/USD', 'SOL/USD', 'XRP/USD'"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    f"""
+                    CREATE TABLE bars (
+                      symbol TEXT NOT NULL CHECK (symbol IN ({old_allowed})),
+                      timeframe TEXT NOT NULL,
+                      time_utc TEXT NOT NULL,
+                      open REAL NOT NULL,
+                      high REAL NOT NULL,
+                      low REAL NOT NULL,
+                      close REAL NOT NULL,
+                      tick_volume REAL,
+                      spread REAL,
+                      real_volume REAL,
+                      source TEXT,
+                      raw_json TEXT,
+                      created_at_utc TEXT NOT NULL,
+                      updated_at_utc TEXT NOT NULL,
+                      PRIMARY KEY (symbol, timeframe, time_utc)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO bars(
+                      symbol, timeframe, time_utc, open, high, low, close,
+                      created_at_utc, updated_at_utc
+                    )
+                    VALUES ('BTC/USD', 'M5', '2026-06-22T12:00:00+00:00', 1, 1, 1, 1, 'now', 'now')
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with SQLiteStore(db_path) as store:
+                store.upsert_bars(
+                    [
+                        {
+                            "symbol": "EUR/USD",
+                            "timeframe": "M5",
+                            "time_utc": datetime(2026, 6, 22, 12, 5, tzinfo=timezone.utc),
+                            "open": 1.08,
+                            "high": 1.09,
+                            "low": 1.07,
+                            "close": 1.085,
+                        }
+                    ]
+                )
+                symbols = [
+                    row["symbol"]
+                    for row in store.fetch_all("SELECT symbol FROM bars ORDER BY symbol")
+                ]
+                user_version = store.fetch_one("PRAGMA user_version")
+
+        self.assertEqual(symbols, ["BTC/USD", "EUR/USD"])
         self.assertEqual(user_version[0], SQLITE_SCHEMA_VERSION)
 
     def test_duplicate_bar_and_tick_writes_are_idempotent(self) -> None:

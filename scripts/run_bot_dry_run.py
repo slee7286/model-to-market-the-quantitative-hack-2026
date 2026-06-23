@@ -176,7 +176,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError as exc:
         print("Dry-run configuration validation failed.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        print("Keep TRADE_MODE=dry_run or paper and use only allowed crypto symbols.", file=sys.stderr)
+        print("Keep TRADE_MODE=dry_run or paper and use only allowed FX/crypto symbols.", file=sys.stderr)
         return 2
     except (ValueError, DryRunOrchestrationError) as exc:
         print("End-to-end dry-run failed safely.", file=sys.stderr)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from mt5_crypto_bot.constants import ALLOWED_SYMBOLS
 from mt5_crypto_bot.risk import (
     AccountRiskState,
     MarketRiskState,
@@ -80,7 +81,7 @@ def market(
 
 
 def all_metadata() -> dict[str, SymbolConfig]:
-    return {symbol: metadata(symbol) for symbol in ("BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD")}
+    return {symbol: metadata(symbol) for symbol in ALLOWED_SYMBOLS}
 
 
 def high_capacity_metadata(symbol: str = "BTC/USD") -> SymbolConfig:
@@ -214,24 +215,25 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.passed)
         self.assertIn("margin usage", decision.risk_check.reason or "")
 
-    def test_aggressive_profile_allows_26x_but_blocks_above_27x_gross(self) -> None:
+    def test_aggressive_profile_allows_just_under_28x_but_blocks_above_28x_gross(self) -> None:
         base_context = context()
         live_metadata = dict(base_context.symbol_metadata)
-        live_metadata["BTC/USD"] = high_capacity_metadata("BTC/USD")
+        live_metadata["EUR/USD"] = high_capacity_metadata("EUR/USD")
         aggressive_context = RiskContext(
             account=base_context.account,
             symbol_metadata=live_metadata,
             positions=base_context.positions,
-            market=base_context.market,
+            market={"EUR/USD": market("EUR/USD", bid=100.0, ask=100.01)},
             now_utc=base_context.now_utc,
         )
+        gross_cap_engine = RiskEngine(RiskLimits(max_margin_usage=1.0))
 
-        allowed = RiskEngine().check_order_intent(
-            intent(volume=260_000.0, price=100.0),
+        allowed = gross_cap_engine.check_order_intent(
+            intent(symbol="EUR/USD", volume=278_000.0, price=100.0),
             aggressive_context,
         )
-        blocked = RiskEngine().check_order_intent(
-            intent(volume=280_000.0, price=100.0),
+        blocked = gross_cap_engine.check_order_intent(
+            intent(symbol="EUR/USD", volume=282_000.0, price=100.0),
             aggressive_context,
         )
 
@@ -282,6 +284,54 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.passed)
         self.assertIn("volume above broker maximum", decision.risk_check.reason or "")
 
+    def test_ballast_batch_allows_concentrated_main_after_soft_limit(self) -> None:
+        metadata_map = all_metadata()
+        metadata_map["BTC/USD"] = high_capacity_metadata("BTC/USD")
+        metadata_map["ETH/USD"] = high_capacity_metadata("ETH/USD")
+        risk_context = RiskContext(
+            account=account(),
+            symbol_metadata=metadata_map,
+            positions=tuple(),
+            market={
+                "BTC/USD": market("BTC/USD"),
+                "ETH/USD": market("ETH/USD"),
+            },
+            now_utc=NOW,
+            single_instrument_breach_seconds=16 * 60,
+            net_directional_breach_seconds=16 * 60,
+        )
+        main = intent(symbol="BTC/USD", side=OrderSide.BUY, volume=240_000.0, price=100.0)
+        ballast = intent(
+            symbol="ETH/USD",
+            side=OrderSide.SELL,
+            volume=30_000.0,
+            price=100.0,
+        ).model_copy(
+            update={
+                "metadata": {
+                    "feature_time_utc": FEATURE_TIME.isoformat(),
+                    "discipline_ballast": True,
+                    "ballast_for_symbol": "BTC/USD",
+                    "target_leverage": 3.0,
+                }
+            }
+        )
+
+        main_alone = RiskEngine().check_order_intent(main, risk_context)
+        batch = RiskEngine().check_order_intents((ballast, main), risk_context)
+
+        self.assertFalse(main_alone.passed)
+        self.assertIn("single-instrument", main_alone.risk_check.reason or "")
+        self.assertEqual(batch.summary()["passed"], 2)
+        self.assertLessEqual(
+            batch.decisions[-1].risk_check.single_instrument_exposure or 1.0,
+            0.90,
+        )
+        self.assertLessEqual(
+            batch.decisions[-1].risk_check.net_directional_exposure or 1.0,
+            0.95,
+        )
+
     def test_sprint_mode_does_not_block_new_risk_on_drawdown_alone(self) -> None:
         decision = RiskEngine().check_order_intent(
             intent(),
@@ -313,6 +363,45 @@ class RiskEngineTests(unittest.TestCase):
 
         self.assertTrue(decision.passed)
         self.assertIsNotNone(decision.approved_order)
+
+    def test_stopless_exact_position_close_with_price_drift_is_risk_reducing(self) -> None:
+        close_intent = intent(
+            side=OrderSide.SELL,
+            volume=100.0,
+            price=102.0,
+            stop_loss=None,
+        )
+        close_context = RiskContext(
+            account=AccountRiskState(
+                observed_at_utc=NOW,
+                balance=100_000.0,
+                equity=100_000.0,
+                margin=0.0,
+                margin_free=100_000.0,
+                gross_leverage=0.0,
+                max_drawdown=0.0,
+                leverage=30.0,
+            ),
+            symbol_metadata=all_metadata(),
+            positions=(
+                PositionRiskState(
+                    symbol="BTC/USD",
+                    side=PositionSide.LONG,
+                    volume=100.0,
+                    price_open=100.0,
+                    price_current=100.0,
+                    observed_at_utc=NOW,
+                ),
+            ),
+            market={"BTC/USD": market("BTC/USD", bid=102.0, ask=102.04)},
+            now_utc=NOW,
+        )
+
+        decision = RiskEngine().check_order_intent(close_intent, close_context)
+
+        self.assertTrue(decision.passed, decision.risk_check.reason)
+        self.assertTrue(decision.risk_check.details.get("position_close_reducing"))
+        self.assertNotIn("stop loss", decision.risk_check.reason or "")
 
     def test_tiny_broker_step_reversal_counts_as_risk_reducing_close(self) -> None:
         close_intent = intent(

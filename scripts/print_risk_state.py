@@ -97,7 +97,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError as exc:
         print("Risk-state configuration validation failed.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        print("Keep TRADE_MODE=dry_run and use only allowed crypto symbols.", file=sys.stderr)
+        print("Keep TRADE_MODE=dry_run and use only allowed FX/crypto symbols.", file=sys.stderr)
         return 2
     except MT5DependencyError as exc:
         print("MT5 dependency check failed.", file=sys.stderr)

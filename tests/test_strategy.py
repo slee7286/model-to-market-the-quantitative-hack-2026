@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mt5_crypto_bot.backtest import make_synthetic_fixture_market_data
+from mt5_crypto_bot.constants import DISCIPLINE_BALLAST_MAIN_SHARE
 from mt5_crypto_bot.schemas import OrderSide, SignalDecision, StrategyParams, SymbolConfig
 from mt5_crypto_bot.storage import SQLiteStore
 from mt5_crypto_bot.strategy import (
@@ -40,6 +41,10 @@ def metadata(symbol: str = "BTC/USD") -> SymbolConfig:
         trade_mode=4,
         raw={"name": symbol.replace("/", "")},
     )
+
+
+def high_capacity_metadata(symbol: str = "BTC/USD") -> SymbolConfig:
+    return metadata(symbol).model_copy(update={"volume_max": 1_000_000.0})
 
 
 def feature_row(
@@ -110,7 +115,10 @@ class StrategyEngineTests(unittest.TestCase):
         self.engine = DryRunStrategyEngine()
 
     def context(self) -> StrategyContext:
-        return StrategyContext(symbol_metadata={"BTC/USD": metadata()}, now_utc=NOW)
+        return StrategyContext(
+            symbol_metadata={"BTC/USD": high_capacity_metadata()},
+            now_utc=NOW,
+        )
 
     def test_long_signal_generates_buy_order_intent(self) -> None:
         result = self.engine.generate_signals(
@@ -140,18 +148,82 @@ class StrategyEngineTests(unittest.TestCase):
         self.assertEqual(result.order_intents[0].side, OrderSide.SELL)
         self.assertGreater(result.order_intents[0].requested_volume, 0.0)
 
-    def test_pnl_sprint_blocks_new_xrp_entries(self) -> None:
+    def test_target_position_can_exceed_broker_max_order_volume(self) -> None:
         result = self.engine.generate_signals(
-            [feature_row(symbol="XRP/USD", score_side="short")],
+            [feature_row(score_side="long")],
             context=StrategyContext(
-                symbol_metadata={"XRP/USD": metadata("XRP/USD")},
+                symbol_metadata={"BTC/USD": metadata("BTC/USD")},
+                equity=1_000.0,
                 now_utc=NOW,
             ),
         )
 
-        self.assertEqual(result.signals[0].decision, SignalDecision.BLOCK)
-        self.assertIn("PnL sprint", result.signals[0].reason or "")
-        self.assertEqual(result.order_intents, ())
+        self.assertGreater(result.signals[0].target_volume or 0.0, 100.0)
+        self.assertGreater(len(result.order_intents), 1)
+        self.assertTrue(all(intent.requested_volume <= 100.0 for intent in result.order_intents))
+        self.assertTrue(all(intent.metadata.get("chunked_order") for intent in result.order_intents))
+        submitted = sum(intent.requested_volume for intent in result.order_intents)
+        self.assertLessEqual(submitted, result.signals[0].target_volume or 0.0)
+
+    def test_lone_entry_adds_opposite_ballast_leg(self) -> None:
+        result = self.engine.generate_signals(
+            [
+                feature_row(symbol="BTC/USD", score_side="long"),
+                feature_row(symbol="ETH/USD", score_side="flat", spread_bps=3.0),
+            ],
+            context=StrategyContext(
+                symbol_metadata={
+                    "BTC/USD": high_capacity_metadata("BTC/USD"),
+                    "ETH/USD": high_capacity_metadata("ETH/USD"),
+                },
+                now_utc=NOW,
+            ),
+        )
+
+        self.assertEqual(len(result.order_intents), 2)
+        self.assertEqual(result.order_intents[0].symbol, "ETH/USD")
+        self.assertEqual(result.order_intents[0].side, OrderSide.SELL)
+        self.assertTrue(result.order_intents[0].metadata.get("discipline_ballast"))
+        self.assertEqual(result.order_intents[1].symbol, "BTC/USD")
+        main_signal = next(signal for signal in result.signals if signal.symbol == "BTC/USD")
+        ballast_signal = next(
+            signal for signal in result.signals if signal.features.get("discipline_ballast")
+        )
+        gross_target = main_signal.target_leverage + ballast_signal.target_leverage
+        self.assertAlmostEqual(
+            main_signal.target_leverage / gross_target,
+            DISCIPLINE_BALLAST_MAIN_SHARE,
+            places=2,
+        )
+
+    def test_xrp_entries_are_enabled_in_integrated_sprint(self) -> None:
+        result = self.engine.generate_signals(
+            [feature_row(symbol="XRP/USD", score_side="short")],
+            context=StrategyContext(
+                symbol_metadata={"XRP/USD": high_capacity_metadata("XRP/USD")},
+                now_utc=NOW,
+            ),
+        )
+
+        self.assertEqual(result.signals[0].decision, SignalDecision.ENTER)
+        self.assertEqual(result.signals[0].direction, "short")
+        self.assertEqual(len(result.order_intents), 1)
+
+    def test_forex_entry_uses_own_trend_without_btc_regime(self) -> None:
+        row = feature_row(symbol="EUR/USD", score_side="long", spread_bps=1.0)
+        row["btc_regime"] = "unknown"
+        row["btc_trend_score"] = None
+        result = self.engine.generate_signals(
+            [row],
+            context=StrategyContext(
+                symbol_metadata={"EUR/USD": high_capacity_metadata("EUR/USD")},
+                now_utc=NOW,
+            ),
+        )
+
+        self.assertEqual(result.signals[0].decision, SignalDecision.ENTER)
+        self.assertEqual(result.signals[0].direction, "long")
+        self.assertEqual(result.order_intents[0].symbol, "EUR/USD")
 
     def test_strategy_params_control_stop_and_take_profit_distance(self) -> None:
         engine = DryRunStrategyEngine(

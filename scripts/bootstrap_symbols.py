@@ -1,4 +1,4 @@
-"""Bootstrap MT5 crypto symbol mapping and metadata with read-only calls."""
+"""Bootstrap MT5 FX/crypto symbol mapping and metadata with read-only calls."""
 
 from __future__ import annotations
 
@@ -34,8 +34,8 @@ from mt5_crypto_bot.symbols import (
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Discover broker symbols for BAR/USD, BTC/USD, ETH/USD, SOL/USD, and "
-            "XRP/USD using read-only MT5 calls. Ambiguous mappings are written as "
+            "Discover broker symbols for the allowed FX/crypto universe using "
+            "read-only MT5 calls. Ambiguous mappings are written as "
             "candidates and are not auto-selected."
         )
     )
@@ -70,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValidationError as exc:
         print("Configuration validation failed before MT5 was contacted.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        print("Keep TRADE_MODE=dry_run and use only allowed crypto symbols.", file=sys.stderr)
+        print("Keep TRADE_MODE=dry_run and use only allowed FX/crypto symbols.", file=sys.stderr)
         return 2
     except MT5DependencyError as exc:
         print("MT5 dependency check failed.", file=sys.stderr)
@@ -121,7 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
-    print("\nAll allowed crypto symbols have confirmed broker mappings.")
+    print("\nAll allowed FX/crypto symbols have confirmed broker mappings.")
     return 0
 
 

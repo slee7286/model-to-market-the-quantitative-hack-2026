@@ -1,6 +1,6 @@
 # MT5 Crypto Bot Runbook: Dry Run, Readiness, and Live-Order Procedure
 
-This guide is the operational runbook for the current MT5 crypto bot. It follows `rules.md` as the highest-priority source of truth. If any previous blueprint or implementation note conflicts with `rules.md`, use `rules.md` and document the conflict before changing code.
+This guide is the operational runbook for the current MT5 FX/crypto bot. It follows `rules.md` as the highest-priority source of truth. If any previous blueprint or implementation note conflicts with `rules.md`, use `rules.md` and document the conflict before changing code.
 
 The current repository is complete for end-to-end dry-run operation and includes a separate guarded live runner. `scripts/run_bot_dry_run.py` remains dry-run only. `scripts/run_bot_live.py` is the only local script that can call MT5 `order_check` and `order_send`, and it fails closed unless `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json` are both present. `BotConfig` still rejects `TRADE_MODE=live`; keep `.env` as `TRADE_MODE=dry_run`.
 
@@ -8,7 +8,7 @@ The current repository is complete for end-to-end dry-run operation and includes
 
 | Area | Required Behavior |
 | --- | --- |
-| Instruments | Trade only `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. |
+| Instruments | Trade only `AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`, `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. |
 | Default mode | Use dry-run or paper mode unless running the separate guarded live runner after approval. |
 | Live orders | Do not place live orders unless the user explicitly gives a separate go-live approval and both live gates are present. |
 | Polling | Keep polling conservative. The dry-run runner enforces a minimum of 5 seconds; 15 seconds is the recommended default. |
@@ -20,7 +20,7 @@ Competition-relevant risk limits from `rules.md`:
 
 | Rule Area | Rule Threshold | Bot Internal Guard |
 | --- | ---: | ---: |
-| Max leverage | 30x account max; penalties begin above 28x | Blocks projected gross leverage above 27x |
+| Max leverage | 30x account max; penalties begin above 28x | Blocks projected gross leverage above 28x |
 | Margin usage | penalties begin above 90% | Blocks projected margin usage above 90% |
 | Single-instrument exposure | penalty above 90% for 30 minutes | Tracks time over threshold and blocks added exposure after the soft window |
 | Net directional exposure | penalty above 95% for 30 minutes | Tracks time over threshold and blocks added exposure after the soft window |
@@ -84,7 +84,7 @@ Create `.env` locally. This file is gitignored and must stay local.
 
 ```dotenv
 TRADE_MODE=dry_run
-TARGET_SYMBOLS=BAR/USD,BTC/USD,ETH/USD,SOL/USD,XRP/USD
+TARGET_SYMBOLS=AUD/USD,EUR/CHF,EUR/GBP,EUR/USD,GBP/USD,USD/CAD,USD/CHF,USD/JPY,BAR/USD,BTC/USD,ETH/USD,SOL/USD,XRP/USD
 DATABASE_URL=sqlite:///data/trading.db
 
 # Optional, needed only for read-only MT5 collection.
@@ -181,7 +181,7 @@ The last-cycle summary includes:
 | --- | --- |
 | `data_mode` | `mt5_live_read_only`, `stored_data`, `synthetic_fixture_fallback`, or `synthetic_fixture_forced`. |
 | `collection.request_count` | Number of read-only MT5 collection requests. Fixture mode uses zero MT5 requests. |
-| `strategy.signals` | Signals generated for the five allowed instruments. |
+| `strategy.signals` | Signals generated for the active FX/crypto instruments. |
 | `strategy.order_intents` | Raw strategy intents before risk checks. |
 | `risk.risk_checks` | Risk checks persisted to the database. |
 | `risk.approved_orders` | Orders approved for dry-run recording. |
@@ -234,26 +234,17 @@ python -c "import sqlite3; con=sqlite3.connect('data/trading.db'); rows=con.exec
 The current strategy is `momo_v1`, frozen in `docs/strategy_design_freeze.md`:
 
 ```text
-Volatility-managed multi-horizon crypto momentum
-with BTC regime filtering, alt beta-adjusted relative strength,
+Volatility-managed multi-horizon FX/crypto momentum
+with BTC regime filtering for crypto alts, alt beta-adjusted relative strength,
 EMA and Donchian trend confirmation, ATR exits,
 spread/liquidity filters, and strict rules-aligned risk caps.
 ```
 
 Instrument treatment:
 
-| Symbol | Role | Starting Cap |
-| --- | --- | ---: |
-| `BTC/USD` | Regime anchor and core trend instrument | no low per-symbol clamp; 27x gross portfolio cap |
-| `ETH/USD` | Liquid high-beta core alt | no low per-symbol clamp; 27x gross portfolio cap |
-| `SOL/USD` | Higher-beta momentum sleeve | no low per-symbol clamp; 27x gross portfolio cap |
-| `XRP/USD` | Event-sensitive alt | collected/audited; fresh sprint entries disabled |
-| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | collected/audited; fresh sprint entries disabled |
-
-The qualification-sprint profile still uses the five-symbol allow-list from
-`rules.md`, but latest collected-data replay enables new/additional exposure
-only on `BTC/USD`, `ETH/USD`, and `SOL/USD`. Existing BAR/XRP exposure may still
-be exited.
+- FX pairs (`AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`) trade their own trend/momentum score with tight spread caps and no BTC gate.
+- Crypto pairs (`BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, `XRP/USD`) trade the original crypto momentum logic; BTC is the regime anchor for crypto alts.
+- All 13 instruments are eligible for fresh entries when data, symbol metadata, freshness, spread, stop, liquidity, margin, and risk gates pass.
 
 Activation gates block entries when required data is missing or stale:
 
@@ -261,7 +252,7 @@ Activation gates block entries when required data is missing or stale:
 2. Allowed canonical symbol.
 3. Complete symbol metadata.
 4. At least 96 completed M5 bars for the traded symbol.
-5. At least 96 completed M5 bars for `BTC/USD` before alt signals are tradable.
+5. At least 96 completed M5 bars for `BTC/USD` before crypto-alt signals are tradable; FX pairs do not require BTC context.
 6. Fresh M5 bar and fresh tick.
 7. Finite spread below symbol cap.
 8. Portfolio risk checks pass.
@@ -367,7 +358,7 @@ Do not use `scripts/run_bot_dry_run.py` for live trading. It remains dry-run onl
 
 The live runner fails closed unless all of these are true:
 
-1. `rules.md` has been reviewed and the target symbols are only `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`.
+1. `rules.md` has been reviewed and the target symbols are only the active 13-symbol FX/crypto universe.
 2. MT5 credentials, broker symbol map, symbol metadata, bars, ticks, and account state are live and fresh.
 3. `LIVE_APPROVED=true` is set in the runtime environment.
 4. `config/LIVE_APPROVED.json` exists and contains `live_approved=true` or `approved=true`.
@@ -387,7 +378,7 @@ Local approval file:
   "live_approved": true,
   "approved_by": "slee7",
   "approved_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
-  "scope": ["BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"],
+  "scope": ["AUD/USD", "EUR/CHF", "EUR/GBP", "EUR/USD", "GBP/USD", "USD/CAD", "USD/CHF", "USD/JPY", "BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"],
   "max_minutes": 30,
   "notes": "Explicit user-approved guarded live session."
 }
@@ -470,7 +461,7 @@ Dry-run completion criteria:
 | Dry-run execution records | Console summary shows `Dry-run execution records` for approved orders. |
 | No live orders | Console confirms no MT5 `order_check` or `order_send` calls. |
 | Database audit trail | `signals`, `risk_checks`, and `orders` contain recent rows. |
-| Rules compliance | Only the five allowed crypto instruments appear in output and database rows. |
+| Rules compliance | Only the 13 active FX/crypto instruments appear in output and database rows. |
 
 Guarded live readiness criteria:
 
@@ -481,4 +472,4 @@ Guarded live readiness criteria:
 | Broker sequence | Live execution calls `order_check` before `order_send`. |
 | Failed check behavior | Failed `order_check` stores a rejection and does not call `order_send`. |
 | Audit trail | Successful fake live sends are stored as `trade_mode='live'` execution rows. |
-| Rules compliance | Only the five allowed crypto instruments are requested. |
+| Rules compliance | Only the 13 active FX/crypto instruments are requested. |

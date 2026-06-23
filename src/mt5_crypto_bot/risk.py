@@ -1,4 +1,4 @@
-"""Pre-trade risk engine for dry-run order intents.
+"""Pre-trade risk engine for dry-run/live order intents.
 
 The strategy layer may emit raw ``OrderIntent`` objects, but this module is the
 approval boundary. Later execution code should accept only ``RiskApprovedOrder``
@@ -11,7 +11,7 @@ import json
 import math
 import os
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,7 +23,10 @@ from mt5_crypto_bot.config import BotConfig
 from mt5_crypto_bot.constants import (
     ALLOWED_SYMBOLS,
     BROKER_STOP_DISTANCE_BUFFER_POINTS,
+    CRYPTO_SYMBOLS,
     DEFAULT_DATABASE_URL,
+    DISCIPLINE_BALLAST_MAX_TARGET_LEVERAGE,
+    FOREX_SYMBOLS,
 )
 from mt5_crypto_bot.schemas import (
     AccountSnapshot,
@@ -41,24 +44,30 @@ from mt5_crypto_bot.storage import SQLiteStore
 
 EPSILON = 1e-9
 RULE_MAX_ACCOUNT_LEVERAGE = 30.0
-RULE_SAFE_GROSS_LEVERAGE_CAP = 27.0
+RULE_SAFE_GROSS_LEVERAGE_CAP = 28.0
 RULE_SAFE_MARGIN_USAGE_CAP = 0.90
 RISK_REDUCING_DUST_LEVERAGE = 0.001
+RISK_REDUCING_CLOSE_PRICE_TOLERANCE = 0.03
 
 SPREAD_CAP_BPS: dict[str, float] = {
+    "AUD/USD": 3.0,
     "BAR/USD": 25.0,
     "BTC/USD": 8.0,
+    "EUR/CHF": 4.0,
+    "EUR/GBP": 3.0,
+    "EUR/USD": 2.0,
     "ETH/USD": 8.0,
+    "GBP/USD": 3.0,
     "SOL/USD": 15.0,
+    "USD/CAD": 3.0,
+    "USD/CHF": 3.0,
+    "USD/JPY": 2.0,
     "XRP/USD": 15.0,
 }
 
 HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
-    "BAR/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
-    "BTC/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
-    "ETH/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
-    "SOL/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
-    "XRP/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
+    **{symbol: RULE_SAFE_GROSS_LEVERAGE_CAP for symbol in FOREX_SYMBOLS},
+    **{symbol: 27.0 for symbol in CRYPTO_SYMBOLS},
 }
 
 
@@ -217,6 +226,7 @@ class RiskContext:
     # net-directional thresholds (seconds). Drives the soft time limit.
     single_instrument_breach_seconds: float = 0.0
     net_directional_breach_seconds: float = 0.0
+    projected_symbol_notionals: Mapping[str, float] | None = None
 
     def account_state(self) -> AccountRiskState | None:
         if self.account is None:
@@ -324,11 +334,24 @@ class RiskEngine:
         *,
         store: SQLiteStore | None = None,
     ) -> RiskBatchResult:
-        decisions = tuple(
-            self.check_order_intent(order_intent, context, store=store)
-            for order_intent in order_intents
-        )
-        return RiskBatchResult(decisions)
+        decisions: list[RiskGateDecision] = []
+        running_context = context
+        for order_intent in order_intents:
+            decision = self.check_order_intent(order_intent, running_context, store=store)
+            decisions.append(decision)
+            if decision.passed:
+                projected = decision.risk_check.details.get("projected_metrics", {})
+                if isinstance(projected, Mapping):
+                    symbol_notionals = projected.get("symbol_notionals")
+                    if isinstance(symbol_notionals, Mapping):
+                        running_context = replace(
+                            running_context,
+                            projected_symbol_notionals={
+                                normalize_symbol(symbol): float(notional)
+                                for symbol, notional in symbol_notionals.items()
+                            },
+                        )
+        return RiskBatchResult(tuple(decisions))
 
     def check_order_intent(
         self,
@@ -454,13 +477,21 @@ class RiskEngine:
             "reasons": reasons,
             "checks": {},
         }
+        is_discipline_ballast = _truthy(intent.metadata.get("discipline_ballast"))
+        if is_discipline_ballast:
+            details["discipline_ballast"] = True
+            ballast_target = _as_optional_float(intent.metadata.get("target_leverage"))
+            if ballast_target is None:
+                reasons.append("block: discipline ballast target leverage unavailable")
+            elif ballast_target > DISCIPLINE_BALLAST_MAX_TARGET_LEVERAGE + EPSILON:
+                reasons.append("block: discipline ballast target leverage exceeds cap")
         account = context.account_state()
         symbol = normalize_symbol(intent.symbol)
         metadata = _metadata_for(context.symbol_metadata, symbol)
         market = _market_for(context.market, symbol)
 
         if symbol not in ALLOWED_SYMBOLS:
-            reasons.append("block: symbol is not in the allowed crypto set")
+            reasons.append("block: symbol is not in the allowed instrument set")
         if account is None:
             reasons.append("block: account state unavailable")
         elif account.equity <= 0:
@@ -502,13 +533,21 @@ class RiskEngine:
                 limits=self.limits,
                 use_account_gross_floor=False,
             )
-            risk_reducing = _is_risk_reducing(
+            position_close_reducing = _is_position_close_reducing(
+                intent,
+                context=context,
+                metadata=metadata,
+                order_price=order_price,
+                current=current_metrics,
+            )
+            risk_reducing = position_close_reducing or _is_risk_reducing(
                 symbol,
                 current=current_metrics,
                 projected=projected_metrics,
             )
             details["current_metrics"] = current_metrics.as_dict()
             details["projected_metrics"] = projected_metrics.as_dict()
+            details["position_close_reducing"] = position_close_reducing
             details["risk_reducing"] = risk_reducing
 
         if context.kill_switch_active and not risk_reducing:
@@ -521,6 +560,7 @@ class RiskEngine:
                     symbol,
                     self.limits,
                     risk_reducing,
+                    is_discipline_ballast=is_discipline_ballast,
                     single_breach_seconds=context.single_instrument_breach_seconds,
                     net_directional_breach_seconds=context.net_directional_breach_seconds,
                 )
@@ -945,6 +985,12 @@ def _current_symbol_notionals(
     context: RiskContext,
     account: AccountRiskState,
 ) -> tuple[dict[str, float], list[str]]:
+    if context.projected_symbol_notionals is not None:
+        notionals = {symbol: 0.0 for symbol in ALLOWED_SYMBOLS}
+        for symbol, value in context.projected_symbol_notionals.items():
+            notionals[normalize_symbol(symbol)] = float(value)
+        return notionals, []
+
     notionals = {symbol: 0.0 for symbol in ALLOWED_SYMBOLS}
     reasons: list[str] = []
     for raw_position in context.positions:
@@ -1041,12 +1087,62 @@ def _is_risk_reducing(
     )
 
 
+def _is_position_close_reducing(
+    intent: OrderIntent,
+    *,
+    context: RiskContext,
+    metadata: SymbolConfig | None,
+    order_price: float | None,
+    current: PortfolioRiskMetrics,
+) -> bool:
+    if metadata is None or order_price is None or order_price <= 0:
+        return False
+    symbol = normalize_symbol(intent.symbol)
+    current_symbol_notional = float(current.symbol_notionals.get(symbol, 0.0))
+    if abs(current_symbol_notional) <= EPSILON:
+        return False
+
+    intent_side = _enum_value(intent.side)
+    current_side = PositionSide.LONG.value if current_symbol_notional > 0 else PositionSide.SHORT.value
+    expected_close_side = OrderSide.SELL.value if current_side == PositionSide.LONG.value else OrderSide.BUY.value
+    if intent_side != expected_close_side:
+        return False
+
+    open_volume = 0.0
+    for raw_position in context.positions:
+        position = (
+            raw_position
+            if isinstance(raw_position, PositionRiskState)
+            else PositionRiskState.from_snapshot(raw_position)
+        )
+        if normalize_symbol(position.symbol) != symbol:
+            continue
+        side = str(getattr(position.side, "value", position.side)).lower()
+        if side != current_side or position.volume <= 0:
+            continue
+        open_volume += float(position.volume)
+    if open_volume <= EPSILON:
+        return False
+
+    volume_step = float(metadata.volume_step or 0.0)
+    if intent.requested_volume > open_volume + max(volume_step, EPSILON):
+        return False
+
+    order_notional = abs(_order_signed_notional(intent, metadata, order_price))
+    close_tolerance = max(
+        current.equity * RISK_REDUCING_DUST_LEVERAGE,
+        abs(current_symbol_notional) * RISK_REDUCING_CLOSE_PRICE_TOLERANCE,
+    )
+    return order_notional <= abs(current_symbol_notional) + close_tolerance
+
+
 def _portfolio_cap_reasons(
     metrics: PortfolioRiskMetrics,
     symbol: str,
     limits: RiskLimits,
     risk_reducing: bool,
     *,
+    is_discipline_ballast: bool = False,
     single_breach_seconds: float = 0.0,
     net_directional_breach_seconds: float = 0.0,
 ) -> list[str]:
@@ -1060,6 +1156,8 @@ def _portfolio_cap_reasons(
         reasons.append("block: projected per-symbol leverage exceeds internal cap")
     if metrics.margin_usage > limits.max_margin_usage + EPSILON:
         reasons.append("block: projected margin usage exceeds internal cap")
+    if is_discipline_ballast:
+        return reasons
     # Concentration / net-direction are soft, time-bounded limits: a breach of the
     # rules thresholds is allowed until it has been sustained past the soft window,
     # after which new exposure-increasing orders that keep us over are blocked.
@@ -1195,6 +1293,10 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "enabled", "block"}
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
 
 
 def _loads_json(value: str | None) -> dict[str, Any]:

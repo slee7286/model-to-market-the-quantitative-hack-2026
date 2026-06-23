@@ -1,5 +1,13 @@
 {
   "allowed_canonical_symbols": [
+    "AUD/USD",
+    "EUR/CHF",
+    "EUR/GBP",
+    "EUR/USD",
+    "GBP/USD",
+    "USD/CAD",
+    "USD/CHF",
+    "USD/JPY",
     "BAR/USD",
     "BTC/USD",
     "ETH/USD",
@@ -7,15 +15,24 @@
     "XRP/USD"
   ],
   "canonical_to_broker": {
+    "AUD/USD": "AUDUSD",
     "BAR/USD": "BARUSD",
     "BTC/USD": "BTCUSD",
     "ETH/USD": "ETHUSD",
+    "EUR/CHF": "EURCHF",
+    "EUR/GBP": "EURGBP",
+    "EUR/USD": "EURUSD",
+    "GBP/USD": "GBPUSD",
     "SOL/USD": "SOLUSD",
+    "USD/CAD": "USDCAD",
+    "USD/CHF": "USDCHF",
+    "USD/JPY": "USDJPY",
     "XRP/USD": "XRPUSD"
   },
-  "generated_at_utc": "2026-06-22T16:25:41.485333+00:00",
+  "generated_at_utc": "2026-06-23T16:19:10.383891+00:00",
   "notes": [
-    "Canonical symbols must remain BAR/USD, BTC/USD, ETH/USD, SOL/USD, XRP/USD.",
+    "Canonical symbols must remain within the rules.md FX+crypto allow-list.",
+    "Metals are allowed by rules.md but intentionally excluded from this build.",
     "BAR/USD is treated as HBAR/Hedera per information.md.",
     "Only entries with status=confirmed are eligible for metadata capture.",
     "Ambiguous or missing entries require manual review in MT5 Market Watch."
@@ -23,6 +40,43 @@
   "schema_version": 1,
   "source": "MT5 symbols_get",
   "symbols": {
+    "AUD/USD": {
+      "broker_symbol": "AUDUSD",
+      "candidates": [
+        {
+          "broker_symbol": "AUDUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "AUD",
+            "currency_margin": "AUD",
+            "currency_profit": "USD",
+            "description": "Australian Dollar vs US Dollar",
+            "digits": 5,
+            "filling_mode": 3,
+            "name": "AUDUSD",
+            "path": "Game\\AUDUSD",
+            "point": 1e-05,
+            "spread": 1,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 1.0,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "AUD/USD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
     "BAR/USD": {
       "broker_symbol": "BARUSD",
       "candidates": [
@@ -30,8 +84,8 @@
           "broker_symbol": "BARUSD",
           "reasons": [
             "currency_base and currency_profit match canonical pair",
-            "exact symbol/name match to canonical base and USD quote",
-            "symbol text contains canonical base alias and USD",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote",
             "verify manually that BAR broker symbol represents HBAR/Hedera"
           ],
           "score": 100,
@@ -45,7 +99,7 @@
             "name": "BARUSD",
             "path": "Game\\BARUSD",
             "point": 1e-05,
-            "spread": 0,
+            "spread": 6,
             "trade_contract_size": 100.0,
             "trade_mode": 4,
             "trade_tick_size": 1e-05,
@@ -57,8 +111,8 @@
         }
       ],
       "canonical_symbol": "BAR/USD",
-      "reason": "Single high-confidence broker symbol candidate.",
-      "source": "auto",
+      "reason": "Manual mapping from existing config/symbol_map.json was confirmed.",
+      "source": "manual",
       "status": "confirmed"
     },
     "BTC/USD": {
@@ -68,8 +122,8 @@
           "broker_symbol": "BTCUSD",
           "reasons": [
             "currency_base and currency_profit match canonical pair",
-            "exact symbol/name match to canonical base and USD quote",
-            "symbol text contains canonical base alias and USD"
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
           ],
           "score": 100,
           "summary": {
@@ -94,8 +148,8 @@
         }
       ],
       "canonical_symbol": "BTC/USD",
-      "reason": "Single high-confidence broker symbol candidate.",
-      "source": "auto",
+      "reason": "Manual mapping from existing config/symbol_map.json was confirmed.",
+      "source": "manual",
       "status": "confirmed"
     },
     "ETH/USD": {
@@ -105,8 +159,8 @@
           "broker_symbol": "ETHUSD",
           "reasons": [
             "currency_base and currency_profit match canonical pair",
-            "exact symbol/name match to canonical base and USD quote",
-            "symbol text contains canonical base alias and USD"
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
           ],
           "score": 100,
           "summary": {
@@ -131,6 +185,154 @@
         }
       ],
       "canonical_symbol": "ETH/USD",
+      "reason": "Manual mapping from existing config/symbol_map.json was confirmed.",
+      "source": "manual",
+      "status": "confirmed"
+    },
+    "EUR/CHF": {
+      "broker_symbol": "EURCHF",
+      "candidates": [
+        {
+          "broker_symbol": "EURCHF",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "EUR",
+            "currency_margin": "EUR",
+            "currency_profit": "CHF",
+            "description": "Euro vs Swiss Franc",
+            "digits": 5,
+            "filling_mode": 3,
+            "name": "EURCHF",
+            "path": "Game\\EURCHF",
+            "point": 1e-05,
+            "spread": 0,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 1.2350710783405587,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "EUR/CHF",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "EUR/GBP": {
+      "broker_symbol": "EURGBP",
+      "candidates": [
+        {
+          "broker_symbol": "EURGBP",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "EUR",
+            "currency_margin": "EUR",
+            "currency_profit": "GBP",
+            "description": "Euro vs Great Britain Pound ",
+            "digits": 5,
+            "filling_mode": 3,
+            "name": "EURGBP",
+            "path": "Game\\EURGBP",
+            "point": 1e-05,
+            "spread": 0,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 1.31956,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "EUR/GBP",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "EUR/USD": {
+      "broker_symbol": "EURUSD",
+      "candidates": [
+        {
+          "broker_symbol": "EURUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "EUR",
+            "currency_margin": "EUR",
+            "currency_profit": "USD",
+            "description": "Euro vs US Dollar",
+            "digits": 5,
+            "filling_mode": 3,
+            "name": "EURUSD",
+            "path": "Game\\EURUSD",
+            "point": 1e-05,
+            "spread": 1,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 1.0,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "EUR/USD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "GBP/USD": {
+      "broker_symbol": "GBPUSD",
+      "candidates": [
+        {
+          "broker_symbol": "GBPUSD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "GBP",
+            "currency_margin": "GBP",
+            "currency_profit": "USD",
+            "description": "Great Britain Pound vs US Dollar",
+            "digits": 5,
+            "filling_mode": 3,
+            "name": "GBPUSD",
+            "path": "Game\\GBPUSD",
+            "point": 1e-05,
+            "spread": 4,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 1.0,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "GBP/USD",
       "reason": "Single high-confidence broker symbol candidate.",
       "source": "auto",
       "status": "confirmed"
@@ -142,8 +344,8 @@
           "broker_symbol": "SOLUSD",
           "reasons": [
             "currency_base and currency_profit match canonical pair",
-            "exact symbol/name match to canonical base and USD quote",
-            "symbol text contains canonical base alias and USD"
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
           ],
           "score": 100,
           "summary": {
@@ -156,7 +358,7 @@
             "name": "SOLUSD",
             "path": "Game\\SOLUSD",
             "point": 0.01,
-            "spread": 0,
+            "spread": 3,
             "trade_contract_size": 10.0,
             "trade_mode": 4,
             "trade_tick_size": 0.01,
@@ -168,6 +370,117 @@
         }
       ],
       "canonical_symbol": "SOL/USD",
+      "reason": "Manual mapping from existing config/symbol_map.json was confirmed.",
+      "source": "manual",
+      "status": "confirmed"
+    },
+    "USD/CAD": {
+      "broker_symbol": "USDCAD",
+      "candidates": [
+        {
+          "broker_symbol": "USDCAD",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "USD",
+            "currency_margin": "USD",
+            "currency_profit": "CAD",
+            "description": "US Dollar vs Canadian Dollar",
+            "digits": 5,
+            "filling_mode": 3,
+            "name": "USDCAD",
+            "path": "Game\\USDCAD",
+            "point": 1e-05,
+            "spread": 2,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 0.7043791250202508,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "USD/CAD",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "USD/CHF": {
+      "broker_symbol": "USDCHF",
+      "candidates": [
+        {
+          "broker_symbol": "USDCHF",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "USD",
+            "currency_margin": "USD",
+            "currency_profit": "CHF",
+            "description": "US Dollar vs Swiss Franc",
+            "digits": 5,
+            "filling_mode": 3,
+            "name": "USDCHF",
+            "path": "Game\\USDCHF",
+            "point": 1e-05,
+            "spread": 1,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 1e-05,
+            "trade_tick_value": 1.2350710783405587,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "USD/CHF",
+      "reason": "Single high-confidence broker symbol candidate.",
+      "source": "auto",
+      "status": "confirmed"
+    },
+    "USD/JPY": {
+      "broker_symbol": "USDJPY",
+      "candidates": [
+        {
+          "broker_symbol": "USDJPY",
+          "reasons": [
+            "currency_base and currency_profit match canonical pair",
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
+          ],
+          "score": 100,
+          "summary": {
+            "currency_base": "USD",
+            "currency_margin": "USD",
+            "currency_profit": "JPY",
+            "description": "US Dollar vs Japanese Yen",
+            "digits": 3,
+            "filling_mode": 3,
+            "name": "USDJPY",
+            "path": "Game\\USDJPY",
+            "point": 0.001,
+            "spread": 1,
+            "trade_contract_size": 100000.0,
+            "trade_mode": 4,
+            "trade_tick_size": 0.001,
+            "trade_tick_value": 0.6189880782896122,
+            "volume_max": 100.0,
+            "volume_min": 0.01,
+            "volume_step": 0.01
+          }
+        }
+      ],
+      "canonical_symbol": "USD/JPY",
       "reason": "Single high-confidence broker symbol candidate.",
       "source": "auto",
       "status": "confirmed"
@@ -179,8 +492,8 @@
           "broker_symbol": "XRPUSD",
           "reasons": [
             "currency_base and currency_profit match canonical pair",
-            "exact symbol/name match to canonical base and USD quote",
-            "symbol text contains canonical base alias and USD"
+            "exact symbol/name match to canonical base and quote",
+            "symbol text contains canonical base alias and quote"
           ],
           "score": 100,
           "summary": {
@@ -193,7 +506,7 @@
             "name": "XRPUSD",
             "path": "Game\\XRPUSD",
             "point": 1e-05,
-            "spread": 0,
+            "spread": 13,
             "trade_contract_size": 100.0,
             "trade_mode": 4,
             "trade_tick_size": 1e-05,
@@ -205,8 +518,8 @@
         }
       ],
       "canonical_symbol": "XRP/USD",
-      "reason": "Single high-confidence broker symbol candidate.",
-      "source": "auto",
+      "reason": "Manual mapping from existing config/symbol_map.json was confirmed.",
+      "source": "manual",
       "status": "confirmed"
     }
   }

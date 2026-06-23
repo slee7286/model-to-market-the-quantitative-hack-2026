@@ -65,6 +65,7 @@ from mt5_crypto_bot.strategy import (
     DryRunStrategyEngine,
     StrategyCycleResult,
     StrategyEngineError,
+    chunk_order_intents_for_broker_limits,
     load_strategy_context_from_store,
 )
 from mt5_crypto_bot.symbols import DEFAULT_SYMBOL_MAP_PATH
@@ -299,9 +300,19 @@ def run_dry_run_settlement_once(
     now = _to_utc(now_utc) if now_utc is not None else _utc_now()
     with SQLiteStore(database_url) as store:
         open_positions = _latest_open_position_snapshots(store, symbols)
-        order_intents = tuple(
+        raw_order_intents = tuple(
             _settlement_order_intent(position, store=store, now_utc=now, config=config)
             for position in open_positions
+        )
+        strategy_context = load_strategy_context_from_store(
+            store,
+            symbols,
+            now_utc=now,
+            enforce_freshness=False,
+        )
+        order_intents = chunk_order_intents_for_broker_limits(
+            raw_order_intents,
+            strategy_context.symbol_metadata,
         )
 
     risk_context = load_risk_context_from_store(

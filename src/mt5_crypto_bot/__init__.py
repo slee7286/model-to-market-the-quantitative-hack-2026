@@ -1,4 +1,4 @@
-"""MT5 crypto bot package.
+"""MT5 FX/crypto bot package.
 
 The scaffold is intentionally safe to import without MT5 installed or configured.
 Live trading is available only through the separate guarded live runner and its

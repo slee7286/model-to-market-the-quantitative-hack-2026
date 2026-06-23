@@ -12,13 +12,13 @@ This document translates local competition constraints and external crypto quant
 
 No trading code was implemented in this phase. All unattended execution paths must remain dry-run, paper, read-only, or test/report generation unless a separate live-approval workflow is explicitly completed.
 
-Current status update: later prompts have implemented the dry-run pipeline, offline analytics, and a separate guarded live runner. This research document remains the justification for `momo_v1`, but operational live trading must follow `docs/run_live_trading.md` and cannot run without `LIVE_APPROVED=true` plus `config/LIVE_APPROVED.json`.
+Current status update: later prompts have implemented the dry-run pipeline, offline analytics, and a separate guarded live runner. This research document remains the crypto-strategy justification for `momo_v1`, but it has been superseded operationally by the integrated FX/crypto update in `docs/strategy_design_freeze.md` and `docs/integrated_fx_crypto_momentum.md`. Operational live trading must follow `docs/run_live_trading.md` and cannot run without `LIVE_APPROVED=true` plus `config/LIVE_APPROVED.json`.
 
 ## Rules-First Constraints
 
 `rules.md` is the highest-priority source of truth. The relevant implications for strategy design are:
 
-- Trade only `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`.
+- Active implementation trades only `AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`, `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`.
 - Avoid forced liquidation. The platform stop-out level is 30% margin level.
 - Stay materially below penalty zones:
   - margin usage penalty starts above 90% for 30 minutes;
@@ -29,7 +29,7 @@ Current status update: later prompts have implemented the dry-run pipeline, offl
 - Avoid API abuse. The rules safe harbor is 500 requests per second, but this project should poll far below that.
 - Do not use fully autonomous live retuning. Parameter changes may be proposed offline only and must require human approval before activation.
 
-The blueprint's strategy direction, volatility-managed crypto momentum with strict guardrails, is consistent with `rules.md`. Any later implementation must keep internal caps below the rule penalty thresholds.
+The blueprint's strategy direction, volatility-managed crypto momentum with strict guardrails, is consistent with `rules.md`. The later integrated implementation keeps the crypto logic and adds trend-only FX signals. Any implementation must keep leverage below the 30x account maximum and respect the live risk guards.
 
 ## Source Table
 
@@ -54,7 +54,7 @@ The blueprint's strategy direction, volatility-managed crypto momentum with stri
 
 | Instrument | Research Read | Practical Role | Starting Risk Treatment |
 | --- | --- | --- | --- |
-| `BTC/USD` | BTC is the best-studied crypto asset and a natural proxy for the crypto market factor. Intraday research is strongest for BTC. | Market regime anchor and core traded instrument. BTC trend should gate alt risk-on/risk-off exposure. | Leaderboard-driven aggressive profile removes the old low symbol cap; require spread <= 8 bps and cap portfolio gross leverage at 27x. |
+| `BTC/USD` | BTC is the best-studied crypto asset and a natural proxy for the crypto market factor. Intraday research is strongest for BTC. | Market regime anchor and core traded instrument. BTC trend should gate alt risk-on/risk-off exposure. | Leaderboard-driven aggressive profile removes the old low symbol cap; require spread <= 8 bps and cap portfolio gross leverage at 28x. |
 | `ETH/USD` | ETH is included in intraday and EMA-momentum evidence and usually carries high crypto beta. | Liquid alt/core momentum asset. Trade ETH when its own momentum confirms BTC regime or when relative strength vs BTC is strong. | No low symbol cap; use gross leverage, margin, spread, and freshness gates to control BTC/ETH stacking. |
 | `SOL/USD` | Contemporary EMA research includes Solana. SOL is typically higher beta and can trend sharply. | High-beta momentum sleeve for broad risk-on conditions. | No low symbol cap; require BTC regime confirmation, wider ATR stops, spread <= 15 bps, and strict red-line discipline. |
 | `XRP/USD` | Ripple/XRP appears in intraday and EMA evidence, but it is event-sensitive and can jump on regulatory or headline risk. | Collect and audit during the sprint; do not open/add fresh entries after negative live/replay attribution. | Existing exposure may exit; fresh entries disabled until later data justifies re-enabling. |
@@ -240,7 +240,7 @@ The first backtester should be lightweight and conservative.
 1. Data:
    - use organizer historical data when available;
    - otherwise use MT5-collected M1/M5 data from dry-run collection;
-   - include only the five allowed canonical instruments and verified broker symbol mappings.
+   - include only the active 13 FX/crypto canonical instruments and verified broker symbol mappings.
 2. Bar timing:
    - compute features on completed bars only;
    - generate signal at M5 bar close;
@@ -277,7 +277,7 @@ If crypto history is incomplete, backtests are provisional. The fallback is fixt
 This plan is read-only or dry-run. It must not place orders.
 
 1. Symbol validation:
-   - discover exact MT5 broker symbols for the five canonical labels;
+   - discover exact MT5 broker symbols for the 13 active FX/crypto canonical labels;
    - manually review ambiguous mappings;
    - store digits, point, contract size, tick size/value, volume min/max/step, spread, trade mode, filling mode, and margin fields.
 2. Data validation:
@@ -301,9 +301,9 @@ This plan is read-only or dry-run. It must not place orders.
 
 | Risk | Rule Impact | Mitigation |
 | --- | --- | --- |
-| Forced liquidation | Immediate elimination. | Keep projected gross leverage <= 27x, block projected margin usage above 90%, use stops, and keep the kill switch available. |
+| Forced liquidation | Immediate elimination. | Keep projected gross leverage <= 28x, block projected margin usage above 90%, use stops, and keep the kill switch available. |
 | Margin usage above 90%/95%/98% | Risk discipline penalties and compliance review. | Internal cap 90%; block new trades and reduce risk if actual or projected margin breaches the cap. |
-| Leverage above 28x/29x/near 30x | Risk discipline penalties and compliance review. | Internal cap 27x; no order may project gross leverage above that cap. |
+| Leverage above 28x/29x/near 30x | Risk discipline penalties and compliance review. | Internal cap 28x; no order may project gross leverage above that cap. |
 | Single-instrument concentration above 90% | Risk discipline penalty. | Track breach duration and stop adding exposure after the soft window rather than pre-blocking all high-conviction trades. |
 | Net directional exposure above 95% | Risk discipline penalty. | Track breach duration and stop adding exposure after the soft window. |
 | Momentum crash or idiosyncratic jump | PnL and survival risk. | Volatility scaling, ATR stops, shock filters, time stops, and kill switch. |

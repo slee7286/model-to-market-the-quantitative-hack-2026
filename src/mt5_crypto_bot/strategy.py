@@ -1,4 +1,4 @@
-"""Dry-run strategy engine for the frozen ``momo_v1`` crypto strategy.
+"""Dry-run strategy engine for the frozen ``momo_v1`` FX/crypto strategy.
 
 The strategy engine is intentionally independent of MT5. It consumes completed
 feature snapshots, emits auditable :class:`Signal` objects, and may build
@@ -21,8 +21,13 @@ import pandas as pd
 from mt5_crypto_bot.constants import (
     ALLOWED_SYMBOLS,
     BROKER_STOP_DISTANCE_BUFFER_POINTS,
+    CRYPTO_SYMBOLS,
     DEFAULT_DATABASE_URL,
     DEFAULT_STRATEGY_VERSION,
+    DISCIPLINE_BALLAST_MAIN_SHARE,
+    DISCIPLINE_BALLAST_MIN_TRIGGER_LEVERAGE,
+    FOREX_SYMBOLS,
+    MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL,
     PNL_SPRINT_ENTRY_SYMBOLS,
 )
 from mt5_crypto_bot.features import (
@@ -49,16 +54,25 @@ INITIAL_EQUITY = 1_000_000.0
 EPSILON = 1e-12
 
 SPREAD_CAP_BPS: dict[str, float] = {
+    "AUD/USD": 3.0,
     "BAR/USD": 25.0,
     "BTC/USD": 8.0,
+    "EUR/CHF": 4.0,
+    "EUR/GBP": 3.0,
+    "EUR/USD": 2.0,
     "ETH/USD": 8.0,
+    "GBP/USD": 3.0,
     "SOL/USD": 15.0,
+    "USD/CAD": 3.0,
+    "USD/CHF": 3.0,
+    "USD/JPY": 2.0,
     "XRP/USD": 15.0,
 }
 
 ABNORMAL_SPREAD_EXIT_MULTIPLE = 1.5
 
 NORMAL_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
+    **{symbol: 28.00 for symbol in FOREX_SYMBOLS},
     "BAR/USD": 27.00,
     "BTC/USD": 27.00,
     "ETH/USD": 27.00,
@@ -67,6 +81,7 @@ NORMAL_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
 }
 
 HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
+    **{symbol: 28.00 for symbol in FOREX_SYMBOLS},
     "BAR/USD": 27.00,
     "BTC/USD": 27.00,
     "ETH/USD": 27.00,
@@ -75,18 +90,34 @@ HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
 }
 
 TARGET_RV_1H: dict[str, float] = {
+    "AUD/USD": 0.0012,
     "BAR/USD": 0.0070,
     "BTC/USD": 0.0080,
+    "EUR/CHF": 0.0007,
+    "EUR/GBP": 0.0008,
+    "EUR/USD": 0.0009,
     "ETH/USD": 0.0085,
+    "GBP/USD": 0.0011,
     "SOL/USD": 0.0110,
+    "USD/CAD": 0.0009,
+    "USD/CHF": 0.0009,
+    "USD/JPY": 0.0010,
     "XRP/USD": 0.0100,
 }
 
 VOLATILITY_FLOOR: dict[str, float] = {
+    "AUD/USD": 0.00035,
     "BAR/USD": 0.0030,
     "BTC/USD": 0.0025,
+    "EUR/CHF": 0.00025,
+    "EUR/GBP": 0.00025,
+    "EUR/USD": 0.00030,
     "ETH/USD": 0.0025,
+    "GBP/USD": 0.00035,
     "SOL/USD": 0.0035,
+    "USD/CAD": 0.00030,
+    "USD/CHF": 0.00030,
+    "USD/JPY": 0.00030,
     "XRP/USD": 0.0035,
 }
 
@@ -195,13 +226,31 @@ class DryRunStrategyEngine:
         strategy_context = context or StrategyContext()
         signals: list[Signal] = []
         order_intents: list[OrderIntent] = []
-        persisted = 0
+        rows: list[dict[str, Any]] = []
         for _, row in frame.sort_values(["feature_time_utc", "symbol"]).iterrows():
-            signal, intent = self.evaluate_row(row, strategy_context)
+            row_data = _row_mapping(row)
+            rows.append(row_data)
+            signal, intent = self.evaluate_row(row_data, strategy_context)
             signals.append(signal)
             if intent is not None:
                 order_intents.append(intent)
-            if store is not None:
+
+        signals, order_intents = self._apply_discipline_ballast(
+            rows=rows,
+            signals=signals,
+            order_intents=order_intents,
+            context=strategy_context,
+        )
+        order_intents = list(
+            chunk_order_intents_for_broker_limits(
+                order_intents,
+                strategy_context.symbol_metadata,
+            )
+        )
+
+        persisted = 0
+        if store is not None:
+            for signal in signals:
                 store.upsert_signal(signal)
                 persisted += 1
         return StrategyCycleResult(
@@ -450,6 +499,197 @@ class DryRunStrategyEngine:
         )
         return signal, intent
 
+    def _apply_discipline_ballast(
+        self,
+        *,
+        rows: Sequence[Mapping[str, Any]],
+        signals: list[Signal],
+        order_intents: list[OrderIntent],
+        context: StrategyContext,
+    ) -> tuple[list[Signal], list[OrderIntent]]:
+        """Split a lone high-conviction entry into main + offset ballast legs."""
+
+        entry_signals = {
+            signal.signal_id: signal
+            for signal in signals
+            if _enum_value(signal.decision) == SignalDecision.ENTER.value
+            and signal.symbol in PNL_SPRINT_ENTRY_SYMBOLS
+            and _enum_value(signal.direction) in {Direction.LONG.value, Direction.SHORT.value}
+        }
+        entry_intents = [intent for intent in order_intents if intent.signal_id in entry_signals]
+        if len(entry_intents) != 1:
+            return signals, order_intents
+
+        main_intent = entry_intents[0]
+        main_signal = entry_signals[str(main_intent.signal_id)]
+        main_target = float(main_signal.target_leverage)
+        if main_target < DISCIPLINE_BALLAST_MIN_TRIGGER_LEVERAGE:
+            return signals, order_intents
+
+        current_other_gross = sum(
+            abs(float(leverage))
+            for symbol, leverage in context.current_position_leverage.items()
+            if normalize_symbol(symbol) != main_signal.symbol
+        )
+        ballast_target = main_target * (1.0 - DISCIPLINE_BALLAST_MAIN_SHARE)
+        if current_other_gross >= ballast_target * 0.8:
+            return signals, order_intents
+
+        row_by_symbol = {normalize_symbol(row.get("symbol")): row for row in rows}
+        main_row = row_by_symbol.get(main_signal.symbol)
+        main_metadata = _metadata_for(context.symbol_metadata, main_signal.symbol)
+        if main_row is None or main_metadata is None:
+            return signals, order_intents
+
+        ballast_symbol = _choose_ballast_symbol(
+            rows=row_by_symbol,
+            context=context,
+            excluded_symbol=main_signal.symbol,
+        )
+        if ballast_symbol is None:
+            return signals, order_intents
+        ballast_row = row_by_symbol[ballast_symbol]
+        ballast_metadata = _metadata_for(context.symbol_metadata, ballast_symbol)
+        if ballast_metadata is None:
+            return signals, order_intents
+
+        main_direction = (
+            Direction.LONG
+            if _enum_value(main_signal.direction) == Direction.LONG.value
+            else Direction.SHORT
+        )
+        ballast_direction = Direction.SHORT if main_direction == Direction.LONG else Direction.LONG
+        now = _context_now(context)
+        ballast_feature_time = _datetime_from_any(ballast_row.get("feature_time_utc"))
+        if _activation_block_reason(
+            ballast_row,
+            symbol=ballast_symbol,
+            metadata=ballast_metadata,
+            now_utc=now,
+            feature_time=ballast_feature_time,
+            context=context,
+        ) is not None:
+            return signals, order_intents
+
+        adjusted_main_target = max(main_target * DISCIPLINE_BALLAST_MAIN_SHARE, 0.0)
+        main_sizing = _entry_sizing(
+            main_signal.symbol,
+            row=main_row,
+            side=main_direction,
+            metadata=main_metadata,
+            target_leverage=adjusted_main_target,
+            current_leverage=float(context.current_position_leverage.get(main_signal.symbol, 0.0)),
+            current_volume=float(context.current_position_volume.get(main_signal.symbol, 0.0)),
+            equity=context.equity,
+            params=self.params,
+        )
+        ballast_sizing = _entry_sizing(
+            ballast_symbol,
+            row=ballast_row,
+            side=ballast_direction,
+            metadata=ballast_metadata,
+            target_leverage=ballast_target,
+            current_leverage=float(context.current_position_leverage.get(ballast_symbol, 0.0)),
+            current_volume=float(context.current_position_volume.get(ballast_symbol, 0.0)),
+            equity=context.equity,
+            params=self.params,
+        )
+        if main_sizing.block_reason is not None or ballast_sizing.block_reason is not None:
+            return signals, order_intents
+
+        adjusted_features = dict(main_signal.features)
+        adjusted_features["discipline_ballast_main_share"] = DISCIPLINE_BALLAST_MAIN_SHARE
+        adjusted_features["discipline_ballast_symbol"] = ballast_symbol
+        adjusted_main_signal = main_signal.model_copy(
+            update={
+                "target_leverage": adjusted_main_target,
+                "target_volume": main_sizing.target_volume,
+                "target_price": main_sizing.entry_price,
+                "features": adjusted_features,
+                "reason": (
+                    f"{main_direction.value} entry/resize; discipline ballast keeps "
+                    f"main target near {DISCIPLINE_BALLAST_MAIN_SHARE:.0%} of gross"
+                ),
+            }
+        )
+        adjusted_main_intent = self._order_intent(
+            signal=adjusted_main_signal,
+            row=main_row,
+            metadata=main_metadata,
+            side=OrderSide.BUY if main_direction == Direction.LONG else OrderSide.SELL,
+            requested_volume=main_sizing.order_volume,
+            stop_loss=main_sizing.stop_loss,
+            take_profit=main_sizing.take_profit,
+        )
+
+        ballast_score = compute_momo_score(ballast_row)
+        ballast_features = _feature_payload(
+            ballast_row,
+            ballast_score,
+            entry_threshold=self.params.entry_threshold,
+            exit_threshold=self.params.exit_threshold,
+        )
+        ballast_features.update(
+            {
+                "discipline_ballast": True,
+                "ballast_for_signal_id": main_signal.signal_id,
+                "ballast_for_symbol": main_signal.symbol,
+                "ballast_main_share": DISCIPLINE_BALLAST_MAIN_SHARE,
+            }
+        )
+        ballast_signal = self._signal(
+            symbol=ballast_symbol,
+            now_utc=now,
+            feature_time=ballast_feature_time,
+            direction=ballast_direction,
+            score=ballast_score,
+            target_leverage=ballast_target,
+            target_volume=ballast_sizing.target_volume,
+            target_price=ballast_sizing.entry_price,
+            features=ballast_features,
+            decision=SignalDecision.ENTER,
+            reason=(
+                f"{ballast_direction.value} discipline ballast for "
+                f"{main_signal.symbol} concentration/net exposure"
+            ),
+        ).model_copy(
+            update={
+                "signal_id": f"{main_signal.signal_id}-ballast-{ballast_symbol.replace('/', '')}"
+            }
+        )
+        base_ballast_intent = self._order_intent(
+            signal=ballast_signal,
+            row=ballast_row,
+            metadata=ballast_metadata,
+            side=OrderSide.BUY if ballast_direction == Direction.LONG else OrderSide.SELL,
+            requested_volume=ballast_sizing.order_volume,
+            stop_loss=ballast_sizing.stop_loss,
+            take_profit=ballast_sizing.take_profit,
+        )
+        ballast_intent = base_ballast_intent.model_copy(
+            update={
+                "metadata": {
+                    **base_ballast_intent.metadata,
+                    "discipline_ballast": True,
+                    "ballast_for_signal_id": main_signal.signal_id,
+                    "ballast_for_symbol": main_signal.symbol,
+                    "ballast_main_share": DISCIPLINE_BALLAST_MAIN_SHARE,
+                }
+            }
+        )
+
+        updated_signals = [
+            adjusted_main_signal if signal.signal_id == main_signal.signal_id else signal
+            for signal in signals
+        ]
+        updated_signals.append(ballast_signal)
+
+        updated_intents = [
+            adjusted_main_intent if intent.client_order_id == main_intent.client_order_id else intent
+            for intent in order_intents
+        ]
+        return updated_signals, [ballast_intent] + updated_intents
+
     def _signal(
         self,
         *,
@@ -556,7 +796,7 @@ def compute_momo_score(row: Mapping[str, Any]) -> float:
     trend_score = trend_pre_volume + 0.05 * volume_confirmation
 
     symbol = normalize_symbol(row.get("symbol"))
-    if symbol == "BTC/USD":
+    if symbol == "BTC/USD" or symbol in FOREX_SYMBOLS:
         return float(trend_score)
     return float(0.75 * trend_score + 0.25 * _as_float(row.get("relative_score")))
 
@@ -736,7 +976,7 @@ def _activation_block_reason(
         return "block: spread bps unavailable"
     if spread_bps > SPREAD_CAP_BPS[symbol]:
         return "block: spread cap"
-    if symbol != "BTC/USD":
+    if symbol in CRYPTO_SYMBOLS and symbol != "BTC/USD":
         btc_regime = str(row.get("btc_regime", "unknown"))
         if btc_regime == "unknown" or not _is_finite(row.get("btc_trend_score")):
             return "block: BTC regime unavailable"
@@ -769,7 +1009,7 @@ def _entry_block_reason(
 
 
 def _btc_regime_gate(row: Mapping[str, Any], symbol: str, side: str) -> bool:
-    if symbol == "BTC/USD":
+    if symbol == "BTC/USD" or symbol not in CRYPTO_SYMBOLS:
         return True
     btc_regime = str(row.get("btc_regime", "unknown"))
     btc_trend = _as_float(row.get("btc_trend_score"))
@@ -816,6 +1056,125 @@ def _candidate_side(score: float, entry_threshold: float) -> Direction | None:
     if score <= -entry_threshold:
         return Direction.SHORT
     return None
+
+
+def _choose_ballast_symbol(
+    *,
+    rows: Mapping[str, Mapping[str, Any]],
+    context: StrategyContext,
+    excluded_symbol: str,
+) -> str | None:
+    candidates: list[tuple[float, str]] = []
+    now = _context_now(context)
+    for symbol in PNL_SPRINT_ENTRY_SYMBOLS:
+        if symbol == excluded_symbol:
+            continue
+        row = rows.get(symbol)
+        metadata = _metadata_for(context.symbol_metadata, symbol)
+        if row is None or metadata is None:
+            continue
+        feature_time = _datetime_from_any(row.get("feature_time_utc"))
+        if _activation_block_reason(
+            row,
+            symbol=symbol,
+            metadata=metadata,
+            now_utc=now,
+            feature_time=feature_time,
+            context=context,
+        ) is not None:
+            continue
+        spread_bps = _as_optional_float(row.get("spread_bps"))
+        candidates.append((spread_bps if spread_bps is not None else math.inf, symbol))
+    if not candidates:
+        return None
+    return sorted(candidates)[0][1]
+
+
+def chunk_order_intents_for_broker_limits(
+    order_intents: Iterable[OrderIntent],
+    metadata_map: Mapping[str, SymbolConfig | Mapping[str, Any]],
+    *,
+    max_chunks_per_signal: int = MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL,
+) -> tuple[OrderIntent, ...]:
+    """Split oversized order requests without treating max volume as position cap."""
+
+    chunked: list[OrderIntent] = []
+    for intent in order_intents:
+        metadata = _metadata_for(metadata_map, intent.symbol)
+        if metadata is None:
+            chunked.append(intent)
+            continue
+        chunked.extend(
+            _chunk_order_intent_for_broker_limit(
+                intent,
+                metadata,
+                max_chunks=max_chunks_per_signal,
+            )
+        )
+    return tuple(chunked)
+
+
+def _chunk_order_intent_for_broker_limit(
+    intent: OrderIntent,
+    metadata: SymbolConfig,
+    *,
+    max_chunks: int,
+) -> tuple[OrderIntent, ...]:
+    max_volume = metadata.volume_max
+    if max_volume is None or max_volume <= 0:
+        return (intent,)
+    if intent.requested_volume <= max_volume + EPSILON:
+        return (intent,)
+    chunk_size = _round_volume(float(max_volume), metadata)
+    if chunk_size is None or chunk_size <= 0:
+        return (intent,)
+
+    min_volume = float(metadata.volume_min or 0.0)
+    remaining = float(intent.requested_volume)
+    volumes: list[float] = []
+    while remaining > EPSILON and len(volumes) < max_chunks:
+        raw_chunk = min(remaining, chunk_size)
+        rounded_chunk = _round_volume(raw_chunk, metadata)
+        if rounded_chunk is None or rounded_chunk <= EPSILON:
+            break
+        if min_volume > 0 and rounded_chunk + EPSILON < min_volume:
+            break
+        volumes.append(float(rounded_chunk))
+        remaining = max(0.0, remaining - rounded_chunk)
+
+    if not volumes:
+        return (intent,)
+
+    emitted = len(volumes)
+    deferred = max(0.0, remaining)
+    result: list[OrderIntent] = []
+    for index, volume in enumerate(volumes, start=1):
+        suffix = f"part{index:03d}of{emitted:03d}"
+        metadata_update = {
+            **intent.metadata,
+            "chunked_order": True,
+            "chunk_index": index,
+            "chunk_count_emitted": emitted,
+            "chunk_max_per_signal": max_chunks,
+            "original_requested_volume": intent.requested_volume,
+            "broker_order_volume_max": max_volume,
+            "deferred_requested_volume": deferred,
+        }
+        result.append(
+            intent.model_copy(
+                update={
+                    "client_order_id": f"{intent.client_order_id}-{suffix}",
+                    "requested_volume": volume,
+                    "comment": f"{intent.comment or ''}:{suffix}"[-31:],
+                    "metadata": metadata_update,
+                }
+            )
+        )
+    return tuple(result)
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
 
 
 def _target_leverage(
@@ -908,9 +1267,6 @@ def _volume_for_leverage(
     rounded = _round_volume(raw_volume, metadata)
     if rounded is None:
         return None
-    max_volume = metadata.volume_max
-    if max_volume is not None and rounded > max_volume:
-        rounded = _round_volume(max_volume, metadata)
     return rounded
 
 
@@ -962,9 +1318,6 @@ def _round_volume(value: float, metadata: SymbolConfig) -> float | None:
         return None
     rounded = math.floor((value + EPSILON) / step) * step
     min_volume = metadata.volume_min
-    max_volume = metadata.volume_max
-    if max_volume is not None:
-        rounded = min(rounded, max_volume)
     if min_volume is not None and rounded < min_volume:
         return rounded
     decimals = max(0, int(round(-math.log10(step)))) if step < 1 else 0
@@ -1214,6 +1567,7 @@ __all__ = [
     "StrategyContext",
     "StrategyCycleResult",
     "StrategyEngineError",
+    "chunk_order_intents_for_broker_limits",
     "compute_momo_score",
     "load_strategy_context_from_store",
     "load_symbol_metadata_from_store",

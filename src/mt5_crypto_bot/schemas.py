@@ -1,4 +1,4 @@
-"""Pydantic schemas for the dry-run-first MT5 crypto bot."""
+"""Pydantic schemas for the dry-run-first MT5 FX/crypto bot."""
 
 from __future__ import annotations
 
@@ -11,7 +11,21 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from mt5_crypto_bot.constants import ALLOWED_SYMBOLS, DEFAULT_STRATEGY_VERSION
 
 
-AllowedSymbol = Literal["BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"]
+AllowedSymbol = Literal[
+    "AUD/USD",
+    "EUR/CHF",
+    "EUR/GBP",
+    "EUR/USD",
+    "GBP/USD",
+    "USD/CAD",
+    "USD/CHF",
+    "USD/JPY",
+    "BAR/USD",
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD",
+]
 
 
 class StrictBaseModel(BaseModel):
@@ -160,8 +174,8 @@ class StrategyParams(StrictBaseModel):
     max_spread_bps_btc_eth: float = Field(default=8.0, gt=0)
     max_spread_bps_sol_xrp_bar: float = Field(default=25.0, gt=0)
     risk_per_trade: float = Field(default=0.004, gt=0, le=0.01)
-    max_gross_leverage: float = Field(default=27.0, gt=0, le=27.0)
-    max_symbol_leverage: float = Field(default=27.0, gt=0, le=27.0)
+    max_gross_leverage: float = Field(default=28.0, gt=0, le=28.0)
+    max_symbol_leverage: float = Field(default=28.0, gt=0, le=28.0)
     max_margin_usage: float = Field(default=0.90, gt=0, le=0.90)
     daily_drawdown_stop: float = Field(default=0.06, gt=0, lt=0.50)
     total_drawdown_stop: float = Field(default=0.10, gt=0, lt=0.50)

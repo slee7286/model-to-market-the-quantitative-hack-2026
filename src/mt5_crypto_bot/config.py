@@ -1,4 +1,4 @@
-"""Configuration loading for the dry-run-first MT5 crypto bot."""
+"""Configuration loading for the dry-run-first MT5 FX/crypto bot."""
 
 from __future__ import annotations
 
@@ -79,8 +79,8 @@ class BotConfig(StrictBaseModel):
     postgres_uri: SecretStr | None = None
     parquet_dir: Path = Path("data/parquet")
 
-    max_gross_leverage: float = Field(default=27.0, gt=0, le=27.0)
-    max_symbol_leverage: float = Field(default=27.0, gt=0, le=27.0)
+    max_gross_leverage: float = Field(default=28.0, gt=0, le=28.0)
+    max_symbol_leverage: float = Field(default=28.0, gt=0, le=28.0)
     max_margin_usage: float = Field(default=0.90, gt=0, le=0.90)
     daily_drawdown_stop: float = Field(default=0.06, gt=0, lt=0.50)
     total_drawdown_stop: float = Field(default=0.10, gt=0, lt=0.50)

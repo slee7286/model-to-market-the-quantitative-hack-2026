@@ -1,4 +1,4 @@
-# MT5 Crypto Bot Runbook: Guarded Live Trading on MetaTrader 5
+# MT5 FX/Crypto Bot Runbook: Guarded Live Trading on MetaTrader 5
 
 This guide is the operational runbook for the **guarded live runner** that actually places orders on MetaTrader 5. It is the live-trading companion to `docs/run_bot_and_live_orders.md`, which covers dry-run operation and readiness. As with that document, `rules.md` is the highest-priority source of truth. If any blueprint, strategy doc, or implementation note conflicts with `rules.md`, follow `rules.md` and document the conflict before changing code.
 
@@ -10,7 +10,7 @@ Live trading is **off by default and fails closed**. The shared `BotConfig` reje
 
 | Area | Required Behavior |
 | --- | --- |
-| Instruments | Trade only `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. |
+| Instruments | Trade only `AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`, `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. |
 | Live runner | Use `scripts/run_bot_live.py` only. Never repurpose `scripts/run_bot_dry_run.py`. |
 | Approval | Live orders require `LIVE_APPROVED=true` **and** a valid `config/LIVE_APPROVED.json`. |
 | Data freshness | Live cycles always enforce freshness and never use fixture fallback. |
@@ -20,21 +20,39 @@ Live trading is **off by default and fails closed**. The shared `BotConfig` reje
 | Secrets | Never commit `.env`, MT5 credentials, or `config/LIVE_APPROVED.json`. |
 | Rules priority | `rules.md` overrides blueprints, strategy docs, prompts, and external docs. |
 
-Current qualification-sprint behavior: the bot still collects and audits all
-five allowed instruments, but fresh entries/adds are enabled only for `BTC/USD`,
-`ETH/USD`, and `SOL/USD`. `BAR/USD` and `XRP/USD` can still be exited if
-exposure exists, but new BAR/XRP exposure is blocked by default based on the
-latest collected-data replay.
+Current integrated behavior: the bot collects, audits, and can generate fresh
+entries for all 13 allowed FX/crypto instruments in one synchronous session.
+FX pairs use their own time-series momentum score; crypto alts may still use
+BTC-relative strength and BTC regime gates.
+
+Discipline-ballast behavior: if one fresh high-conviction trade is the only
+new exposure candidate, the strategy can split the same intended gross exposure
+into an approximately 89% main leg plus an 11% opposite-direction companion leg
+in another eligible low-spread symbol. This is meant to reduce
+single-instrument and net-direction exposure under `rules.md`; it does not
+override freshness, spread, margin, gross leverage, stop-distance, kill-switch,
+`order_check`, or live-approval gates.
+
+Volume semantics: broker `volume_max` is handled as a per-order maximum, not as
+a cap on total holdings. The collector now stores the broker-reported
+`volume_max` without a local `100.0` override. If an add or close needs more
+volume than one order can submit, the strategy splits the request into metadata-
+tagged chunks capped at the per-order maximum.
 
 Competition-relevant risk limits from `rules.md` (enforced by the same `RiskEngine` used in dry-run):
 
 | Rule Area | Rule Threshold | Bot Internal Guard |
 | --- | ---: | ---: |
-| Max leverage | 30x account max; penalties begin above 28x | Blocks projected gross leverage above 27x |
+| Max leverage | 30x account max; penalties begin above 28x | Blocks projected gross leverage above 28x |
 | Margin usage | penalties begin above 90% | Blocks projected margin usage above 90% |
 | Single-instrument exposure | penalty above 90% for 30 minutes | Tracks time over threshold and blocks added exposure after the soft window |
 | Net directional exposure | penalty above 95% for 30 minutes | Tracks time over threshold and blocks added exposure after the soft window |
 | API abuse | safe harbor at or below 500 requests/second | Default live cadence is 15 seconds |
+
+Important practical note: the strategy/risk cap is `28x` gross leverage, but
+the `90%` margin-usage guard is still enforced. On a 30x account, margin usage
+can become binding before a full 28x target is reached; this is intentional and
+keeps the bot away from sustained margin-discipline penalties.
 
 ## 2. What The Live Runner Does
 
@@ -43,7 +61,7 @@ Competition-relevant risk limits from `rules.md` (enforced by the same `RiskEngi
 1. **Validate live approval first.** `_require_live_approval` constructs an `ExecutionEngine(trade_mode="live")` and calls `require_live_approval()` before any data is collected. This checks `LIVE_APPROVED=true`, the existence and validity of `config/LIVE_APPROVED.json`, the approval `scope` against the requested symbols, and `max_minutes` against `--minutes`. If any check fails, the cycle raises `LiveTradingApprovalError` and **no MT5 order APIs are touched**.
 2. **Collect fresh, real MT5 data.** `collect_market_account_once` reads bars, ticks, symbol metadata, account state, and positions. There is no fixture fallback in this path.
 3. **Compute features** with `require_data=True` (freshness enforced).
-4. **Generate `momo_v1` signals** with `enforce_freshness=True` and `latest_only=True`, recording the active strategy version (`approved_by="guarded_live"`).
+4. **Generate `momo_v1` signals** with `enforce_freshness=True` and `latest_only=True`, recording the active strategy version (`approved_by="guarded_live"`). If a single dominant entry would create a concentrated one-instrument basket, the strategy may add a metadata-tagged discipline-ballast intent before the main intent.
 5. **Run retry suppression, then risk checks.** The session-level `OrderRetryGuard` skips exact duplicate order intents that already failed risk/execution in the same run. Changed signals, changed prices, changed volumes, or expired cooldowns are evaluated normally. Remaining intents go through `RiskEngine` and the kill-switch file. Only approved orders proceed.
 6. **Execute approved orders** through `_execute_live_approved_orders`: initialize and log into MT5, then for each approved order call `order_check`, and only on a passing retcode call `order_send`. Every request and result is stored.
 7. **Reconcile** by reading open positions (`positions_get`) and recent deal history (`history_deals_get`) into the database. These are read-only.
@@ -70,7 +88,7 @@ Create `.env` locally (gitignored). Note that `TRADE_MODE` stays `dry_run` even 
 
 ```dotenv
 TRADE_MODE=dry_run
-TARGET_SYMBOLS=BAR/USD,BTC/USD,ETH/USD,SOL/USD,XRP/USD
+TARGET_SYMBOLS=AUD/USD,EUR/CHF,EUR/GBP,EUR/USD,GBP/USD,USD/CAD,USD/CHF,USD/JPY,BAR/USD,BTC/USD,ETH/USD,SOL/USD,XRP/USD
 DATABASE_URL=sqlite:///data/trading.db
 
 # Required for live execution: real MT5 terminal credentials.
@@ -118,7 +136,7 @@ Create `config/LIVE_APPROVED.json`. It is gitignored and must never be committed
   "live_approved": true,
   "approved_by": "slee7",
   "approved_at_utc": "2026-06-22T12:00:00Z",
-  "scope": ["BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"],
+  "scope": ["AUD/USD", "EUR/CHF", "EUR/GBP", "EUR/USD", "GBP/USD", "USD/CAD", "USD/CHF", "USD/JPY", "BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"],
   "max_minutes": 30,
   "notes": "Explicit user-approved guarded live session."
 }
@@ -335,7 +353,7 @@ The build is ready for a guarded live session when all of these hold:
 | Safety tests | `python -m unittest tests.test_execution tests.test_live` passes. |
 | Broker sequence | Live execution calls `order_check` before `order_send`; failed checks never send. |
 | Audit trail | Successful sends stored as `trade_mode='live'` rows with `order_check`/`order_send` payloads. |
-| Rules compliance | Only the five allowed crypto instruments are requested and traded. |
+| Rules compliance | Only the 13 active FX/crypto instruments are requested and traded. |
 | Bounded + interruptible | `--minutes` set, kill switch path available. |
 
 ## 16. Northflank 24/7 Note

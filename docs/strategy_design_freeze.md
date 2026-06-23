@@ -2,14 +2,26 @@
 
 Run ID: `20260622_031000`
 
-This document freezes the first code-ready strategy specification for the MT5 crypto bot. It is documentation only: no strategy, risk, or execution code is implemented in this phase.
+This document originally froze the first code-ready strategy specification for the MT5 crypto bot. It is now maintained as the strategy provenance document for the integrated FX/crypto live bot.
 
 Current status update: the strategy described here has since been implemented through dry-run execution and offline analytics, and a separate guarded live runner now exists. The freeze itself remains the source for `momo_v1` strategy/risk intent. Any live session must still use `scripts/run_bot_live.py` with `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json`; unattended automation must not create those gates or place live orders.
 
-Empirical update on 2026-06-23: overnight live data, stored signal replay, and leaderboard review moved the active `momo_v1` profile into a qualification PnL sprint. Through the 2026-06-24 22:00 BST cutoff, stored signal replay is scored by return only, active thresholds are `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.75`, and drawdown/Sharpe throttles are disabled while retaining the crypto-only symbol allow-list, explicit live approval, freshness checks, spread checks, `order_check`, kill switch, and leverage/margin red-line guards. The lower `1.0 / 0.05` setting generated excessive churn; the active profile instead targets fewer, larger, cleaner exposures under a 27x gross-leverage cap and 90% margin-usage cap. Latest replay also disables fresh `BAR/USD` and `XRP/USD` entries for the sprint: all five symbols are still collected and audited, but the entry universe is `BTC/USD`, `ETH/USD`, and `SOL/USD`; existing BAR/XRP exposure may still be exited.
+Integrated FX/crypto update on 2026-06-23: the active `momo_v1` build now runs one synchronous session across 13 instruments: `AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`, `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. Metals are allowed by `rules.md` but intentionally excluded from this implementation. Active thresholds remain `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.75`; all 13 instruments are eligible for fresh entries when data, spread, metadata, stop, liquidity, margin, and risk gates pass. FX pairs use time-series trend/momentum only; crypto alts may still use BTC-relative strength and BTC regime gates. The operational gross-leverage cap is `28.0x`, while the `90%` margin-usage guard can still become the binding limit before 28x on a 30x account.
 
-The strategy is constrained to the allowed crypto instruments only:
+Discipline-ballast update on 2026-06-23: when exactly one high-conviction fresh entry appears, the strategy may preserve the same total intended gross exposure but split it into an approximately `89%` main leg and `11%` opposite-direction ballast leg in the lowest-spread eligible companion symbol. This is not a new alpha signal; it is a rules-discipline mechanism to reduce prolonged single-instrument and net-direction exposure while staying under the gross-leverage and margin-usage guards. Tagged ballast orders still require fresh data, symbol metadata, spread checks, stop checks, `order_check`, kill switch clearance, and risk approval.
 
+Volume-limit update on 2026-06-23: `volume_max` must be interpreted as a maximum per submitted order, not a maximum total position. The collector must store broker-reported metadata without a hardcoded `100.0` override. Strategy target sizing may exceed 100 units when leverage math requires it; oversized adds or closes are split into order-intent chunks capped at the per-order `volume_max`.
+
+The active strategy is constrained to the following FX/crypto instruments only:
+
+- `AUD/USD`
+- `EUR/CHF`
+- `EUR/GBP`
+- `EUR/USD`
+- `GBP/USD`
+- `USD/CAD`
+- `USD/CHF`
+- `USD/JPY`
 - `BAR/USD` as HBAR/Hedera per `information.md`
 - `BTC/USD`
 - `ETH/USD`
@@ -37,10 +49,10 @@ Safe fallback: freeze the research-backed MVP with explicit activation gates. No
 The strategy engine may emit `HOLD` or `BLOCK` signals with missing data, but it must not emit entry order intents unless all of these gates pass:
 
 1. `config/symbol_map.json` exists and every enabled target symbol has `status=confirmed`.
-2. The symbol is one of `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, or `XRP/USD`.
+2. The symbol is one of the 13 active FX/crypto instruments listed above.
 3. Latest symbol metadata exists for the symbol and includes at least `broker_symbol`, `digits`, `point`, `trade_contract_size`, `volume_min`, `volume_max`, `volume_step`, `trade_mode`, and `filling_mode`.
 4. At least 96 completed M5 bars exist for the traded symbol.
-5. At least 96 completed M5 bars exist for `BTC/USD` before any altcoin signal is tradable.
+5. At least 96 completed M5 bars exist for `BTC/USD` before any crypto-alt signal is tradable. FX pairs do not require BTC regime context.
 6. The latest completed M5 bar is not older than 15 minutes.
 7. The latest tick is not older than 120 seconds.
 8. Current bid and ask are present and produce a finite spread in basis points.
@@ -54,8 +66,8 @@ If any gate fails, the strategy decision is `BLOCK` with a reason. Existing futu
 Freeze `momo_v1` as:
 
 ```text
-Volatility-managed multi-horizon crypto momentum
-with BTC regime filtering, alt beta-adjusted relative strength,
+Volatility-managed multi-horizon FX/crypto momentum
+with BTC regime filtering for crypto alts, alt beta-adjusted relative strength,
 EMA and Donchian trend confirmation, ATR exits,
 spread/liquidity filters, and strict rules-aligned risk caps.
 ```
@@ -66,20 +78,37 @@ This matches `docs/strategy_research.md` and the blueprint direction. Because no
 
 | Area | Freeze Decision | Reason |
 | --- | --- | --- |
-| BAR/HBAR risk cap | Low per-symbol leverage caps removed for the aggressive competition profile; entries still require acceptable spread, metadata, and freshness. | Leaderboard evidence favors larger exposures. `rules.md` permits leverage up to 30x, so the current guard is portfolio gross leverage <= 27x. |
+| FX integration | Add the 8 allowed forex pairs from `rules.md` and exclude metals despite being allowed by the rulebook. | User requested one FX+crypto session; metals are outside the active scope. |
+| BAR/HBAR risk cap | Low per-symbol leverage caps removed for the aggressive competition profile; entries still require acceptable spread, metadata, and freshness. | Leaderboard evidence favors larger exposures. `rules.md` permits leverage up to 30x, so the current guard is portfolio gross leverage <= 28x plus the 90% margin guard. |
 | Signal formula weights | Use the research document's balanced M15/H1, EMA, Donchian, slope, and volume weights. | Prompt 01 refined the blueprint formula using external research. |
-| Gross leverage stretch | Aggressive live cap is `27.0x` gross exposure. | Return rank carries 70% of the score; leaderboard leaders are using large exposures. This stays below the 28x penalty band and 30x account maximum. |
+| Gross leverage stretch | Aggressive live cap is `28.0x` gross exposure. | Return rank carries 70% of the score; this stays below the 30x account maximum while the margin guard may bind earlier. |
 | Order-book imbalance | Shadow-only optional filter until stable `market_book_get()` data exists. | Depth availability is unverified. This avoids fragile or high-frequency behavior. |
 
 ## Instrument Roles
+
+FX pairs are lower-volatility instruments with tighter spread caps and trend-only
+signals. They do not use BTC regime gating:
+
+| Symbol | Role | Trading Bias | Starting Treatment |
+| --- | --- | --- | --- |
+| `EUR/USD` | Core FX liquidity anchor | Trade own trend both long and short. | Tightest FX spread cap; 28x symbol cap subject to portfolio/margin gates. |
+| `USD/JPY` | Major USD/rates momentum pair | Trade own trend both long and short. | Tight FX spread cap; watch tick freshness and point precision. |
+| `GBP/USD` | Higher-volatility major | Trade own trend both long and short. | Slightly wider FX spread cap and higher volatility target than EUR/USD. |
+| `AUD/USD` | Risk-sensitive FX sleeve | Trade own trend both long and short. | Moderate FX spread cap and volatility target. |
+| `USD/CAD` | Commodity/USD sleeve | Trade own trend both long and short. | Moderate FX spread cap and volatility target. |
+| `USD/CHF` | Defensive USD sleeve | Trade own trend both long and short. | Moderate FX spread cap and volatility target. |
+| `EUR/GBP` | Cross-rate diversifier | Trade own trend both long and short. | Tight cross spread cap; no BTC context. |
+| `EUR/CHF` | Lower-volatility cross | Trade own trend both long and short. | Lower FX volatility target; slightly wider cross spread cap. |
+
+Crypto keeps the BTC-relative/regime structure from the original MVP:
 
 | Symbol | Role | Trading Bias | Starting Treatment |
 | --- | --- | --- | --- |
 | `BTC/USD` | Regime anchor and core instrument | Trade own trend both long and short. Use as market state for all alts. | Highest liquidity assumption, no low per-symbol clamp, spread cap `8 bps`. |
 | `ETH/USD` | Liquid high-beta core alt | Trade momentum when own signal confirms or relative strength is strong. | No low per-symbol clamp; reduce stacking only through gross leverage, margin, freshness, and spread gates. |
 | `SOL/USD` | Higher-beta momentum sleeve | Trade only with no strong opposing BTC regime. | No low per-symbol clamp, spread cap `15 bps`, shock filter. |
-| `XRP/USD` | Event-sensitive alt | Collect and audit; no fresh sprint entries after latest negative replay contribution. | Existing exposure may exit; fresh entries disabled until later data justifies re-enabling. |
-| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | Collect and audit; no fresh sprint entries after latest negative replay contribution. | Existing exposure may exit; fresh entries disabled until later data justifies re-enabling. |
+| `XRP/USD` | Event-sensitive alt | Trade momentum when own signal and BTC conflict gate pass. | Spread cap `15 bps`, shock filter. |
+| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | Trade momentum when own signal and BTC conflict gate pass. | Wider spread cap `25 bps`; verify broker mapping carefully. |
 
 ## Timeframes And Cadence
 
@@ -338,6 +367,14 @@ Starting volatility targets:
 
 | Symbol | `target_rv_1h` | `volatility_floor` | Rationale |
 | --- | --- | --- | --- |
+| `AUD/USD` | `0.0012` | `0.00035` | Risk-sensitive major; lower FX volatility scale. |
+| `EUR/CHF` | `0.0007` | `0.00025` | Lower-volatility cross. |
+| `EUR/GBP` | `0.0008` | `0.00025` | Lower-volatility cross-rate diversifier. |
+| `EUR/USD` | `0.0009` | `0.00030` | Core liquid FX anchor. |
+| `GBP/USD` | `0.0011` | `0.00035` | Higher-volatility major. |
+| `USD/CAD` | `0.0009` | `0.00030` | Moderate FX volatility. |
+| `USD/CHF` | `0.0009` | `0.00030` | Moderate FX volatility. |
+| `USD/JPY` | `0.0010` | `0.00030` | Liquid major with meaningful intraday moves. |
 | `BTC/USD` | `0.0080` | `0.0025` | Core asset with meaningful intraday movement. |
 | `ETH/USD` | `0.0085` | `0.0025` | Similar core liquidity, modestly higher beta. |
 | `SOL/USD` | `0.0110` | `0.0035` | Higher beta and higher normal volatility. |
@@ -350,11 +387,11 @@ These caps are now leaderboard-aggressive but remain bounded by `rules.md`: marg
 
 | Risk Control | Starting Limit | Hard Behavior | Rationale |
 | --- | --- | --- | --- |
-| Gross leverage target | Signal-scaled up to `27.0x` | Block projected exposure above `27.0x` | Below 28x leverage penalty zone and 30x account maximum. |
+| Gross leverage target | Signal-scaled up to `28.0x` | Block projected exposure above `28.0x` | Below the 30x account maximum; margin may bind first. |
 | Margin usage warning | Monitor continuously | No new risk if projected margin usage exceeds `90%` | Avoids the `>90%` penalty threshold while using available margin. |
 | Single-instrument share target | Opportunistic | Track time above `90%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
 | Net directional exposure target | Opportunistic | Track time above `95%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
-| Max open positions | 5 | One position per allowed symbol | Prevents duplicated exposure. |
+| Max open positions | 13 | One position per active FX/crypto symbol | Prevents duplicated exposure. |
 | Drawdown optimization | Disabled for qualification sprint | Drawdown alone does not block new entries | Return rank is the active priority before the finals reset. |
 | Kill switch | Local flag or config state | Block entries and allow reductions only | Manual safety override. |
 
@@ -362,6 +399,14 @@ Symbol leverage caps:
 
 | Symbol | Normal Cap | Hard Cap | Rationale |
 | --- | --- | --- | --- |
+| `AUD/USD` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
+| `EUR/CHF` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
+| `EUR/GBP` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
+| `EUR/USD` | `28.00x` | `28.00x` | Core FX liquidity anchor. |
+| `GBP/USD` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
+| `USD/CAD` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
+| `USD/CHF` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
+| `USD/JPY` | `28.00x` | `28.00x` | Core FX liquidity sleeve. |
 | `BTC/USD` | `27.00x` | `27.00x` | Anchor and likely best liquidity. |
 | `ETH/USD` | `27.00x` | `27.00x` | Core alt, correlated with BTC. |
 | `SOL/USD` | `27.00x` | `27.00x` | Higher beta, still filtered by spread/shock gates. |

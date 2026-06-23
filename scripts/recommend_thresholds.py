@@ -53,7 +53,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (ValidationError, ValueError) as exc:
         print("Threshold recommendation failed.", file=sys.stderr)
         print(str(exc), file=sys.stderr)
-        print("Use only BAR/USD, BTC/USD, ETH/USD, SOL/USD, and XRP/USD.", file=sys.stderr)
+        print("Use only the active FX/crypto symbols from rules.md and constants.py.", file=sys.stderr)
         return 2
 
     payload = recommendation.as_dict()

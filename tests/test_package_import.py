@@ -5,16 +5,29 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+EXPECTED_SYMBOLS = (
+    "AUD/USD",
+    "EUR/CHF",
+    "EUR/GBP",
+    "EUR/USD",
+    "GBP/USD",
+    "USD/CAD",
+    "USD/CHF",
+    "USD/JPY",
+    "BAR/USD",
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "XRP/USD",
+)
+
 
 class PackageImportTests(unittest.TestCase):
     def test_package_imports_without_mt5(self) -> None:
         package = importlib.import_module("mt5_crypto_bot")
 
         self.assertEqual(package.DEFAULT_TRADE_MODE, "dry_run")
-        self.assertEqual(
-            package.ALLOWED_SYMBOLS,
-            ("BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"),
-        )
+        self.assertEqual(package.ALLOWED_SYMBOLS, EXPECTED_SYMBOLS)
 
     def test_scaffold_modules_import_without_credentials(self) -> None:
         modules = [
@@ -46,10 +59,7 @@ class PackageImportTests(unittest.TestCase):
         snapshot = default_config_snapshot()
 
         self.assertEqual(snapshot["trade_mode"], "dry_run")
-        self.assertEqual(
-            snapshot["target_symbols"],
-            ("BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD"),
-        )
+        self.assertEqual(snapshot["target_symbols"], EXPECTED_SYMBOLS)
 
 
 if __name__ == "__main__":
