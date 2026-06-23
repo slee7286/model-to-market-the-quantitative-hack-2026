@@ -23,7 +23,7 @@ class CoarseGrid:
     """Small retuning grid from the research/design freeze."""
 
     entry_thresholds: tuple[float, ...] = (1.0, 1.25, 1.5)
-    exit_thresholds: tuple[float, ...] = (0.25, 0.35, 0.5)
+    exit_thresholds: tuple[float, ...] = (0.25, 0.35, 0.5, 0.75)
     atr_stop_multiples: tuple[float, ...] = (1.2, 1.6, 2.0)
     take_profit_multiples: tuple[float, ...] = (1.8, 2.4, 3.0)
     max_proposals: int = 6
@@ -141,8 +141,6 @@ def proposal_is_risk_safe(base: StrategyParams, candidate: StrategyParams) -> bo
         and candidate.max_gross_leverage <= base.max_gross_leverage
         and candidate.max_symbol_leverage <= base.max_symbol_leverage
         and candidate.max_margin_usage <= base.max_margin_usage
-        and candidate.daily_drawdown_stop <= base.daily_drawdown_stop
-        and candidate.total_drawdown_stop <= base.total_drawdown_stop
     )
 
 
@@ -174,7 +172,7 @@ def manual_approval_workflow_markdown() -> str:
         [
             "1. Review the inactive `strategy_versions` rows created by analytics.",
             "2. Backtest the candidate on non-fixture history and compare it with `momo_v1`.",
-            "3. Run a bounded dry-run/shadow session and inspect risk blocks, spread costs, and drawdown.",
+            "3. Run a bounded dry-run/shadow session and inspect risk blocks and spread costs.",
             "4. Reject any candidate that increases leverage, margin usage, risk per trade, or symbol caps without explicit human approval.",
             "5. Promote a candidate only through a separate manual approval change that marks exactly one strategy version active.",
         ]
@@ -200,7 +198,6 @@ def _proposal_score(
 ) -> float:
     score = 0.0
     trade_count = int(metrics.get("trade_count") or 0)
-    max_drawdown = float(metrics.get("max_drawdown") or 0.0)
     failed_blocks = _reason_count(reject_reason_rows, "block") + _reason_count(
         reject_reason_rows, "reject"
     )
@@ -211,7 +208,7 @@ def _proposal_score(
 
     if trade_count < 30:
         score += 2.0 if candidate.entry_threshold < base.entry_threshold else -0.5
-    if max_drawdown > 0.03 or failed_blocks > 0:
+    if failed_blocks > 0:
         score += 2.0 if candidate.entry_threshold >= base.entry_threshold else -1.0
         score += 0.5 if candidate.exit_threshold <= base.exit_threshold else -0.25
     if spread_blocks > 0:
@@ -236,11 +233,14 @@ def _proposal_rationale(
 ) -> str:
     pieces: list[str] = []
     trade_count = int(metrics.get("trade_count") or 0)
-    max_drawdown = float(metrics.get("max_drawdown") or 0.0)
     if trade_count < 30 and candidate.entry_threshold < base.entry_threshold:
         pieces.append("lower entry threshold to collect more validation trades")
-    if max_drawdown > 0.03 and candidate.entry_threshold >= base.entry_threshold:
-        pieces.append("higher or equal entry threshold after drawdown pressure")
+    block_count = _reason_count(reject_reason_rows, "block") + _reason_count(
+        reject_reason_rows,
+        "reject",
+    )
+    if block_count > 0 and candidate.entry_threshold >= base.entry_threshold:
+        pieces.append("higher or equal entry threshold after execution/risk blocks")
     if _reason_count(reject_reason_rows, "spread") > 0 and candidate.entry_threshold >= base.entry_threshold:
         pieces.append("avoid weaker signals when spread blocks are common")
     if _bucket_pnl(signal_bucket_rows, "strong_long") + _bucket_pnl(signal_bucket_rows, "strong_short") > 0:

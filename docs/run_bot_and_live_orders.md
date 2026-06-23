@@ -247,8 +247,13 @@ Instrument treatment:
 | `BTC/USD` | Regime anchor and core trend instrument | no low per-symbol clamp; 27x gross portfolio cap |
 | `ETH/USD` | Liquid high-beta core alt | no low per-symbol clamp; 27x gross portfolio cap |
 | `SOL/USD` | Higher-beta momentum sleeve | no low per-symbol clamp; 27x gross portfolio cap |
-| `XRP/USD` | Event-sensitive alt | no low per-symbol clamp; 27x gross portfolio cap |
-| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | no low per-symbol clamp; 27x gross portfolio cap |
+| `XRP/USD` | Event-sensitive alt | collected/audited; fresh sprint entries disabled |
+| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | collected/audited; fresh sprint entries disabled |
+
+The qualification-sprint profile still uses the five-symbol allow-list from
+`rules.md`, but latest collected-data replay enables new/additional exposure
+only on `BTC/USD`, `ETH/USD`, and `SOL/USD`. Existing BAR/XRP exposure may still
+be exited.
 
 Activation gates block entries when required data is missing or stale:
 

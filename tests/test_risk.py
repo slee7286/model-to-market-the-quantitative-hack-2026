@@ -282,14 +282,13 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.passed)
         self.assertIn("volume above broker maximum", decision.risk_check.reason or "")
 
-    def test_drawdown_blocks_new_risk(self) -> None:
+    def test_sprint_mode_does_not_block_new_risk_on_drawdown_alone(self) -> None:
         decision = RiskEngine().check_order_intent(
             intent(),
             context(acct=account(max_drawdown=0.081)),
         )
 
-        self.assertFalse(decision.passed)
-        self.assertIn("drawdown", decision.risk_check.reason or "")
+        self.assertTrue(decision.passed, decision.risk_check.reason)
 
     def test_kill_switch_blocks_new_risk(self) -> None:
         decision = RiskEngine().check_order_intent(
@@ -313,6 +312,34 @@ class RiskEngineTests(unittest.TestCase):
         )
 
         self.assertTrue(decision.passed)
+        self.assertIsNotNone(decision.approved_order)
+
+    def test_tiny_broker_step_reversal_counts_as_risk_reducing_close(self) -> None:
+        close_intent = intent(
+            symbol="XRP/USD",
+            side=OrderSide.BUY,
+            volume=100.0,
+            price=100.04,
+            stop_loss=None,
+        )
+        decision = RiskEngine().check_order_intent(
+            close_intent,
+            context(
+                positions=(
+                    PositionRiskState(
+                        symbol="XRP/USD",
+                        side=PositionSide.SHORT,
+                        volume=99.99,
+                        price_open=100.0,
+                        price_current=100.0,
+                        observed_at_utc=NOW,
+                    ),
+                ),
+                markets={"XRP/USD": market("XRP/USD")},
+            ),
+        )
+
+        self.assertTrue(decision.passed, decision.risk_check.reason)
         self.assertIsNotNone(decision.approved_order)
 
     def test_minimum_stop_distance_blocks_trade(self) -> None:

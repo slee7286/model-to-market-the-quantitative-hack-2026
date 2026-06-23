@@ -20,7 +20,11 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from mt5_crypto_bot.config import BotConfig
-from mt5_crypto_bot.constants import ALLOWED_SYMBOLS, DEFAULT_DATABASE_URL
+from mt5_crypto_bot.constants import (
+    ALLOWED_SYMBOLS,
+    BROKER_STOP_DISTANCE_BUFFER_POINTS,
+    DEFAULT_DATABASE_URL,
+)
 from mt5_crypto_bot.schemas import (
     AccountSnapshot,
     OrderIntent,
@@ -39,6 +43,7 @@ EPSILON = 1e-9
 RULE_MAX_ACCOUNT_LEVERAGE = 30.0
 RULE_SAFE_GROSS_LEVERAGE_CAP = 27.0
 RULE_SAFE_MARGIN_USAGE_CAP = 0.90
+RISK_REDUCING_DUST_LEVERAGE = 0.001
 
 SPREAD_CAP_BPS: dict[str, float] = {
     "BAR/USD": 25.0,
@@ -74,8 +79,9 @@ class RiskLimits:
     max_single_instrument_share: float = 0.90
     max_net_directional_share: float = 0.95
     concentration_soft_limit_seconds: float = 15 * 60.0
-    no_new_risk_drawdown: float = 0.08
-    hard_drawdown: float = 0.10
+    # Qualification sprint mode ignores drawdown as an optimization target.
+    # Red-line protection remains enforced through leverage, margin, freshness,
+    # stop, kill-switch, and execution checks.
     tick_stale_seconds: float = 120.0
     feature_stale_seconds: float = 15 * 60.0
     max_future_feature_skew_seconds: float = 60.0
@@ -86,7 +92,6 @@ class RiskLimits:
     @classmethod
     def from_config(cls, config: BotConfig) -> RiskLimits:
         """Build limits from config while never exceeding the rules-aware live cap."""
-        total_stop = float(config.total_drawdown_stop)
         gross_cap = min(float(config.max_gross_leverage), RULE_SAFE_GROSS_LEVERAGE_CAP)
         return cls(
             max_gross_leverage=gross_cap,
@@ -96,8 +101,6 @@ class RiskLimits:
                 RULE_SAFE_GROSS_LEVERAGE_CAP,
             ),
             max_margin_usage=min(float(config.max_margin_usage), RULE_SAFE_MARGIN_USAGE_CAP),
-            no_new_risk_drawdown=min(0.08, total_stop),
-            hard_drawdown=min(0.10, total_stop),
         )
 
 
@@ -510,15 +513,6 @@ class RiskEngine:
 
         if context.kill_switch_active and not risk_reducing:
             reasons.append("block: kill switch active")
-
-        if account is not None and account.max_drawdown >= self.limits.hard_drawdown and not risk_reducing:
-            reasons.append("block: hard drawdown guard")
-        elif (
-            account is not None
-            and account.max_drawdown >= self.limits.no_new_risk_drawdown
-            and not risk_reducing
-        ):
-            reasons.append("block: no-new-risk drawdown guard")
 
         if projected_metrics is not None:
             reasons.extend(
@@ -1037,10 +1031,12 @@ def _is_risk_reducing(
 ) -> bool:
     current_symbol = current.symbol_notionals.get(symbol, 0.0)
     projected_symbol = projected.symbol_notionals.get(symbol, 0.0)
-    reverses_direction = current_symbol * projected_symbol < -EPSILON
+    dust_notional = max(current.equity * RISK_REDUCING_DUST_LEVERAGE, EPSILON)
+    projected_is_dust = abs(projected_symbol) <= dust_notional
+    reverses_direction = current_symbol * projected_symbol < -EPSILON and not projected_is_dust
     return (
         projected.gross_leverage <= current.gross_leverage + EPSILON
-        and abs(projected_symbol) <= abs(current_symbol) + EPSILON
+        and (abs(projected_symbol) <= abs(current_symbol) + EPSILON or projected_is_dust)
         and not reverses_direction
     )
 
@@ -1105,10 +1101,19 @@ def _stop_distance_reasons(
     if spread is None or point is None:
         return ["block: stop-distance inputs unavailable"]
     stop_distance = abs(order_price - intent.stop_loss)
-    min_stop_distance = max(3.0 * spread, 5.0 * point)
+    min_stop_distance = max(3.0 * spread, _metadata_min_stop_distance(metadata))
     if stop_distance + EPSILON < min_stop_distance:
         return ["block: stop distance below minimum"]
     return []
+
+
+def _metadata_min_stop_distance(metadata: SymbolConfig) -> float:
+    point = metadata.point
+    if point is None or point <= 0:
+        return 0.0
+    raw = metadata.raw if isinstance(metadata.raw, Mapping) else {}
+    stops_level = _as_optional_float(raw.get("trade_stops_level")) or 0.0
+    return max(5.0 * point, (stops_level + BROKER_STOP_DISTANCE_BUFFER_POINTS) * point)
 
 
 def _order_price(intent: OrderIntent, market: MarketRiskState | None) -> float | None:

@@ -235,6 +235,13 @@ class FakeLiveMT5(FakeMT5):
         )
 
 
+class StopsLevelFakeLiveMT5(FakeLiveMT5):
+    def symbol_info(self, symbol: str) -> object:
+        info = dict(super().symbol_info(symbol))
+        info["trade_stops_level"] = 30
+        return info
+
+
 class ExecutionEngineTests(unittest.TestCase):
     def test_dry_run_records_order_and_result_without_mt5_calls(self) -> None:
         fake_mt5 = FakeMT5()
@@ -447,6 +454,41 @@ class ExecutionEngineTests(unittest.TestCase):
         self.assertEqual(refresh["original_requested_price"], 100.5)
         self.assertEqual(refresh["live_requested_price"], 101.0)
         self.assertEqual(refresh["broker_time_offset_seconds"], 0.0)
+
+    def test_live_order_refresh_adds_broker_stop_buffer(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                tight_intent = order_intent().model_copy(
+                    update={"stop_loss": 100.3, "take_profit": 100.7}
+                )
+                fake_mt5 = StopsLevelFakeLiveMT5(bid=100.4, ask=100.6)
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(
+                    RiskApprovedOrder(
+                        order_intent=tight_intent,
+                        risk_check=risk_check(),
+                        approval_id="approval-1",
+                        approved_at_utc=NOW,
+                    ),
+                    mt5_module=fake_mt5,
+                )
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(result.status, "filled")
+        self.assertAlmostEqual(fake_mt5.check_request["sl"], 100.07)
+        self.assertAlmostEqual(fake_mt5.check_request["tp"], 100.93)
+        refresh = result.result["live_precheck"]["live_refresh"]
+        self.assertAlmostEqual(refresh["min_stop_distance"], 0.33)
 
     def test_live_order_accepts_broker_server_tick_time_offset(self) -> None:
         old_value = os.environ.get("LIVE_APPROVED")

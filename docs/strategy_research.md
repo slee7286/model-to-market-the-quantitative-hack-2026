@@ -40,7 +40,7 @@ The blueprint's strategy direction, volatility-managed crypto momentum with stri
 | Local blueprint | `mt5_crypto_trading_blueprint.md` | Recommends volatility-scaled multi-asset crypto momentum with BTC regime, alt relative strength, ATR exits, spread filters, and strict risk caps. | Use the blueprint as the baseline, refined by research below. |
 | Liu, Tsyvinski, Wu, "Common Risk Factors in Cryptocurrency" | https://economics.yale.edu/research/common-risk-factors-cryptocurrency | Cryptocurrency market, size, and momentum factors help explain cross-sectional crypto returns. | Cross-sectional relative strength is defensible for BTC, ETH, SOL, XRP, and cautiously BAR/HBAR if liquidity is acceptable. |
 | Barroso and Santa-Clara, "Momentum Has Its Moments" | https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2041429 | Momentum risk is time-varying; scaling exposure by realized volatility can materially reduce crash behavior in traditional momentum. | Volatility-manage signal exposure instead of using fixed leverage. |
-| Grobys et al., "Cryptocurrency momentum has (not) its moments" | https://link.springer.com/article/10.1007/s11408-025-00474-9 | Crypto momentum can suffer severe idiosyncratic crashes; volatility management helps, but tail risk remains large. | Use momentum only with volatility scaling, symbol caps, spread filters, and drawdown guards. Do not assume momentum is a free lunch. |
+| Grobys et al., "Cryptocurrency momentum has (not) its moments" | https://link.springer.com/article/10.1007/s11408-025-00474-9 | Crypto momentum can suffer severe idiosyncratic crashes; volatility management helps, but tail risk remains large. | Use momentum only with volatility scaling, symbol caps, spread filters, and kill-switch controls. Do not assume momentum is a free lunch. |
 | Wen, Bouri, Xu, Zhao, "Intraday return predictability in the cryptocurrency markets" | https://ideas.repec.org/a/eee/ecofin/v62y2022ics1062940822000833.html | Intraday momentum and reversal appear in BTC and other active crypto, including Ethereum and Ripple; patterns vary with jumps, FOMC, liquidity, and regimes. | M5/M15/H1 features are justified, but intraday reversal should be a challenger or exit filter until validated. |
 | Zarattini, Pagani, Barbon, "Catching Crypto Trends" | https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5209907 | Donchian channel trend ensembles with volatility-based sizing show strong net-of-fees results in a liquid crypto rotation universe. | Add Donchian breakout features and keep a Donchian ensemble as a primary challenger strategy. |
 | "Momentum Trading in Cryptocurrencies: A Comparative Study of Time-Series and Cross-Sectional Strategies" | https://www.zurnalai.vu.lt/BATP/en/article/view/44540 | A multi-horizon EMA framework on BTC, ETH, XRP, SOL and other large crypto finds economically meaningful momentum effects, using volatility normalization and both time-series and cross-sectional structures. | Multi-horizon EMA distances and volatility-normalized ranking should be implemented directly. |
@@ -55,10 +55,10 @@ The blueprint's strategy direction, volatility-managed crypto momentum with stri
 | Instrument | Research Read | Practical Role | Starting Risk Treatment |
 | --- | --- | --- | --- |
 | `BTC/USD` | BTC is the best-studied crypto asset and a natural proxy for the crypto market factor. Intraday research is strongest for BTC. | Market regime anchor and core traded instrument. BTC trend should gate alt risk-on/risk-off exposure. | Leaderboard-driven aggressive profile removes the old low symbol cap; require spread <= 8 bps and cap portfolio gross leverage at 27x. |
-| `ETH/USD` | ETH is included in intraday and EMA-momentum evidence and usually carries high crypto beta. | Liquid alt/core momentum asset. Trade ETH when its own momentum confirms BTC regime or when relative strength vs BTC is strong. | No low symbol cap; use gross leverage, margin, spread, freshness, and drawdown gates to control BTC/ETH stacking. |
-| `SOL/USD` | Contemporary EMA research includes Solana. SOL is typically higher beta and can trend sharply. | High-beta momentum sleeve for broad risk-on conditions. | No low symbol cap; require BTC regime confirmation, wider ATR stops, spread <= 15 bps, and strict drawdown response. |
-| `XRP/USD` | Ripple/XRP appears in intraday and EMA evidence, but it is event-sensitive and can jump on regulatory or headline risk. | Opportunistic momentum sleeve with strong risk controls. | No low symbol cap; require spread and jump filters, and avoid increasing exposure after extreme one-bar moves. |
-| `BAR/USD` | Local notes define BAR as HBAR/Hedera. The reviewed academic evidence does not directly validate HBAR. | Optional idiosyncratic alt sleeve only if MT5 metadata confirms reasonable spread, volume step, and depth. | No low symbol cap; block trading if spread is wide, depth is missing, or mapping is ambiguous. |
+| `ETH/USD` | ETH is included in intraday and EMA-momentum evidence and usually carries high crypto beta. | Liquid alt/core momentum asset. Trade ETH when its own momentum confirms BTC regime or when relative strength vs BTC is strong. | No low symbol cap; use gross leverage, margin, spread, and freshness gates to control BTC/ETH stacking. |
+| `SOL/USD` | Contemporary EMA research includes Solana. SOL is typically higher beta and can trend sharply. | High-beta momentum sleeve for broad risk-on conditions. | No low symbol cap; require BTC regime confirmation, wider ATR stops, spread <= 15 bps, and strict red-line discipline. |
+| `XRP/USD` | Ripple/XRP appears in intraday and EMA evidence, but it is event-sensitive and can jump on regulatory or headline risk. | Collect and audit during the sprint; do not open/add fresh entries after negative live/replay attribution. | Existing exposure may exit; fresh entries disabled until later data justifies re-enabling. |
+| `BAR/USD` | Local notes define BAR as HBAR/Hedera. The reviewed academic evidence does not directly validate HBAR. | Collect and audit during the sprint; do not open/add fresh entries after negative live/replay attribution. | Existing exposure may exit; fresh entries disabled until later data justifies re-enabling. |
 
 ## Candidate Strategy Comparison
 
@@ -81,7 +81,7 @@ Use a volatility-managed multi-horizon crypto momentum strategy with:
 - EMA and Donchian trend confirmation;
 - ATR-based stops and take-profit levels;
 - spread/liquidity filters;
-- strict leverage, margin, concentration, and drawdown caps.
+- strict leverage, margin, concentration, freshness, and spread caps.
 
 This is the best fit because it is supported by the crypto factor literature, implementable from MT5 OHLCV/tick data, explainable to judges, and compatible with `rules.md` risk discipline. It also avoids relying on fragile live LLM decisions or high-frequency order-book trading.
 
@@ -170,7 +170,7 @@ These are research-driven starting values, not live-approved production settings
 | ATR span | 14 M5 bars | Used for stops, shock filters, and normalization. |
 | Realized vol spans | 12, 24, 48 M5 bars | Used for volatility scaling and abnormal-vol filters. |
 | Entry threshold | 1.25 | Coarse-grid candidate: 1.0, 1.25, 1.5. |
-| Exit threshold | 0.50 | Updated from 0.35 after 2026-06-23 overnight evidence favored faster exits; coarse-grid candidate: 0.25, 0.35, 0.5. |
+| Exit threshold | 0.75 | Qualification PnL sprint update after stored signal replay favored return-only performance; coarse-grid candidate: 0.25, 0.35, 0.5, 0.75. |
 | ATR stop | 1.6x ATR | Coarse-grid candidate: 1.2, 1.6, 2.0. |
 | Take profit | 2.4x ATR | Coarse-grid candidate: 1.8, 2.4, 3.0. |
 | Trailing stop | 1.2x ATR | Activate only after unrealized profit exceeds 1 ATR. |
@@ -301,12 +301,12 @@ This plan is read-only or dry-run. It must not place orders.
 
 | Risk | Rule Impact | Mitigation |
 | --- | --- | --- |
-| Forced liquidation | Immediate elimination. | Keep projected gross leverage <= 27x, block projected margin usage above 90%, and stop new risk above drawdown guards. |
+| Forced liquidation | Immediate elimination. | Keep projected gross leverage <= 27x, block projected margin usage above 90%, use stops, and keep the kill switch available. |
 | Margin usage above 90%/95%/98% | Risk discipline penalties and compliance review. | Internal cap 90%; block new trades and reduce risk if actual or projected margin breaches the cap. |
 | Leverage above 28x/29x/near 30x | Risk discipline penalties and compliance review. | Internal cap 27x; no order may project gross leverage above that cap. |
 | Single-instrument concentration above 90% | Risk discipline penalty. | Track breach duration and stop adding exposure after the soft window rather than pre-blocking all high-conviction trades. |
 | Net directional exposure above 95% | Risk discipline penalty. | Track breach duration and stop adding exposure after the soft window. |
-| Momentum crash or idiosyncratic jump | Drawdown, Sharpe, and survival risk. | Volatility scaling, ATR stops, shock filters, time stops, drawdown guard, and kill switch. |
+| Momentum crash or idiosyncratic jump | PnL and survival risk. | Volatility scaling, ATR stops, shock filters, time stops, and kill switch. |
 | Wide spreads and poor liquidity | Return drag and false signal profitability. | Spread bps filters, tick freshness checks, optional order-book confirmation, and `order_check` before `order_send`. |
 | API abuse or anomalous request patterns | Red-line disqualification risk. | M5 signal cadence, conservative tick polling, no high-frequency loops, request count logging. |
 | Ambiguous broker symbol mapping | Trading unsupported or wrong instrument. | Canonical allow-list plus explicit broker mapping; ambiguous mappings require manual confirmation. |

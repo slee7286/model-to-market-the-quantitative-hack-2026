@@ -20,7 +20,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from mt5_crypto_bot.config import BotConfig
-from mt5_crypto_bot.constants import DEFAULT_DATABASE_URL
+from mt5_crypto_bot.constants import BROKER_STOP_DISTANCE_BUFFER_POINTS, DEFAULT_DATABASE_URL
 from mt5_crypto_bot.mt5_client import read_last_error
 from mt5_crypto_bot.risk import RiskApprovedOrder
 from mt5_crypto_bot.schemas import (
@@ -526,7 +526,7 @@ def _refresh_intent_to_live_market(
     digits = _as_optional_int(info.get("digits"))
     point = _as_optional_float(info.get("point")) or 0.0
     stops_level = _as_optional_int(info.get("trade_stops_level")) or 0
-    min_dist = (stops_level + 1) * point if point > 0 else 0.0
+    min_dist = (stops_level + BROKER_STOP_DISTANCE_BUFFER_POINTS) * point if point > 0 else 0.0
 
     def _round(value: float) -> float:
         return round(value, digits) if digits is not None else value

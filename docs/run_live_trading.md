@@ -20,6 +20,12 @@ Live trading is **off by default and fails closed**. The shared `BotConfig` reje
 | Secrets | Never commit `.env`, MT5 credentials, or `config/LIVE_APPROVED.json`. |
 | Rules priority | `rules.md` overrides blueprints, strategy docs, prompts, and external docs. |
 
+Current qualification-sprint behavior: the bot still collects and audits all
+five allowed instruments, but fresh entries/adds are enabled only for `BTC/USD`,
+`ETH/USD`, and `SOL/USD`. `BAR/USD` and `XRP/USD` can still be exited if
+exposure exists, but new BAR/XRP exposure is blocked by default based on the
+latest collected-data replay.
+
 Competition-relevant risk limits from `rules.md` (enforced by the same `RiskEngine` used in dry-run):
 
 | Rule Area | Rule Threshold | Bot Internal Guard |

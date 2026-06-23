@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mt5_crypto_bot.backtest import make_synthetic_fixture_market_data
-from mt5_crypto_bot.schemas import OrderSide, SignalDecision, SymbolConfig
+from mt5_crypto_bot.schemas import OrderSide, SignalDecision, StrategyParams, SymbolConfig
 from mt5_crypto_bot.storage import SQLiteStore
 from mt5_crypto_bot.strategy import (
     DryRunStrategyEngine,
@@ -139,6 +139,32 @@ class StrategyEngineTests(unittest.TestCase):
         self.assertEqual(len(result.order_intents), 1)
         self.assertEqual(result.order_intents[0].side, OrderSide.SELL)
         self.assertGreater(result.order_intents[0].requested_volume, 0.0)
+
+    def test_pnl_sprint_blocks_new_xrp_entries(self) -> None:
+        result = self.engine.generate_signals(
+            [feature_row(symbol="XRP/USD", score_side="short")],
+            context=StrategyContext(
+                symbol_metadata={"XRP/USD": metadata("XRP/USD")},
+                now_utc=NOW,
+            ),
+        )
+
+        self.assertEqual(result.signals[0].decision, SignalDecision.BLOCK)
+        self.assertIn("PnL sprint", result.signals[0].reason or "")
+        self.assertEqual(result.order_intents, ())
+
+    def test_strategy_params_control_stop_and_take_profit_distance(self) -> None:
+        engine = DryRunStrategyEngine(
+            StrategyParams(atr_stop_multiple=2.0, take_profit_multiple=3.0)
+        )
+        result = engine.generate_signals(
+            [feature_row(score_side="long")],
+            context=self.context(),
+        )
+
+        intent = result.order_intents[0]
+        self.assertAlmostEqual(intent.stop_loss or 0.0, (intent.requested_price or 0.0) - 4.0)
+        self.assertAlmostEqual(intent.take_profit or 0.0, (intent.requested_price or 0.0) + 6.0)
 
     def test_flat_signal_holds_without_order_intent(self) -> None:
         result = self.engine.generate_signals(

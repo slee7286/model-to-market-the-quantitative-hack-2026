@@ -6,7 +6,7 @@ This document freezes the first code-ready strategy specification for the MT5 cr
 
 Current status update: the strategy described here has since been implemented through dry-run execution and offline analytics, and a separate guarded live runner now exists. The freeze itself remains the source for `momo_v1` strategy/risk intent. Any live session must still use `scripts/run_bot_live.py` with `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json`; unattended automation must not create those gates or place live orders.
 
-Empirical update on 2026-06-23: overnight live data and stored signal replay moved the active `momo_v1` thresholds to `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.50`. The lower `1.0 / 0.05` setting generated excessive churn, while the local replay over 723 stored signal rows favored fewer entries and faster exits. A later leaderboard review showed that top-ranked accounts were winning with fewer, much larger exposures, so the live sizing envelope was raised to a 27x gross-leverage cap and 90% margin-usage cap while retaining the crypto-only symbol allow-list, explicit live approval, freshness checks, spread checks, `order_check`, kill switch, and drawdown guards.
+Empirical update on 2026-06-23: overnight live data, stored signal replay, and leaderboard review moved the active `momo_v1` profile into a qualification PnL sprint. Through the 2026-06-24 22:00 BST cutoff, stored signal replay is scored by return only, active thresholds are `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.75`, and drawdown/Sharpe throttles are disabled while retaining the crypto-only symbol allow-list, explicit live approval, freshness checks, spread checks, `order_check`, kill switch, and leverage/margin red-line guards. The lower `1.0 / 0.05` setting generated excessive churn; the active profile instead targets fewer, larger, cleaner exposures under a 27x gross-leverage cap and 90% margin-usage cap. Latest replay also disables fresh `BAR/USD` and `XRP/USD` entries for the sprint: all five symbols are still collected and audited, but the entry universe is `BTC/USD`, `ETH/USD`, and `SOL/USD`; existing BAR/XRP exposure may still be exited.
 
 The strategy is constrained to the allowed crypto instruments only:
 
@@ -76,10 +76,10 @@ This matches `docs/strategy_research.md` and the blueprint direction. Because no
 | Symbol | Role | Trading Bias | Starting Treatment |
 | --- | --- | --- | --- |
 | `BTC/USD` | Regime anchor and core instrument | Trade own trend both long and short. Use as market state for all alts. | Highest liquidity assumption, no low per-symbol clamp, spread cap `8 bps`. |
-| `ETH/USD` | Liquid high-beta core alt | Trade momentum when own signal confirms or relative strength is strong. | No low per-symbol clamp; reduce stacking only through gross leverage, margin, freshness, spread, and drawdown gates. |
+| `ETH/USD` | Liquid high-beta core alt | Trade momentum when own signal confirms or relative strength is strong. | No low per-symbol clamp; reduce stacking only through gross leverage, margin, freshness, and spread gates. |
 | `SOL/USD` | Higher-beta momentum sleeve | Trade only with no strong opposing BTC regime. | No low per-symbol clamp, spread cap `15 bps`, shock filter. |
-| `XRP/USD` | Event-sensitive alt | Trade momentum only with tighter jump and regime filters. | No low per-symbol clamp, spread cap `15 bps`; no exposure increase after shock bars. |
-| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | Trade only if mapping, metadata, spread, and volume are acceptable. | No low per-symbol clamp, spread cap `25 bps`; block if depth/spread is unstable. |
+| `XRP/USD` | Event-sensitive alt | Collect and audit; no fresh sprint entries after latest negative replay contribution. | Existing exposure may exit; fresh entries disabled until later data justifies re-enabling. |
+| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | Collect and audit; no fresh sprint entries after latest negative replay contribution. | Existing exposure may exit; fresh entries disabled until later data justifies re-enabling. |
 
 ## Timeframes And Cadence
 
@@ -250,7 +250,7 @@ BTC regime gates:
 
 For long positions, exit or reduce when any condition is true:
 
-- `final_score_raw <= 0.50`.
+- `final_score_raw <= 0.75`.
 - M5 close crosses below `ema_20`.
 - Stop-loss is reached.
 - Take-profit is reached.
@@ -258,11 +258,11 @@ For long positions, exit or reduce when any condition is true:
 - Position age exceeds 180 minutes.
 - Current spread exceeds `1.5 * spread_cap_bps`.
 - Latest tick age exceeds 300 seconds or latest M5 bar is older than 20 minutes.
-- Drawdown, margin, leverage, concentration, net direction, or kill-switch guard triggers.
+- Margin, leverage, concentration, net direction, stale-state, or kill-switch guard triggers.
 
 For short positions, use the symmetric conditions:
 
-- `final_score_raw >= -0.50`.
+- `final_score_raw >= -0.75`.
 - M5 close crosses above `ema_20`.
 - Stop-loss, take-profit, trailing stop, time stop, stale data, spread, or portfolio guard triggers.
 
@@ -318,7 +318,7 @@ score_scale = clamp((abs(final_score_raw) - 1.25) / (2.25 - 1.25), 0.0, 1.0)
 risk_fraction = 0.0025 + 0.0025 * score_scale
 ```
 
-This gives a starting risk fraction from `0.25%` to `0.50%` of equity per trade before drawdown and volatility scaling.
+This gives a starting risk fraction from `0.25%` to `0.50%` of equity per trade before volatility scaling. Drawdown scaling is disabled during the qualification PnL sprint.
 
 Volatility scale:
 
@@ -326,19 +326,10 @@ Volatility scale:
 vol_scale = clamp(target_rv_1h / max(rv_1h_equiv, volatility_floor), 0.35, 1.25)
 ```
 
-Drawdown scale:
-
-```text
-drawdown_scale = 1.00  if total_drawdown < 0.03
-drawdown_scale = 0.50  if 0.03 <= total_drawdown < 0.05
-drawdown_scale = 0.25  if 0.05 <= total_drawdown < 0.08
-drawdown_scale = 0.00  if total_drawdown >= 0.08
-```
-
 Risk dollars:
 
 ```text
-risk_dollars = equity * risk_fraction * vol_scale * drawdown_scale
+risk_dollars = equity * risk_fraction * vol_scale
 ```
 
 Stop-based notional must be estimated with MT5 metadata. Future code should use broker metadata and, where available in a safe read-only/check path, `order_calc_profit` or equivalent risk math before any live-approved order. Never assume MT5 volume units equal coins.
@@ -364,10 +355,7 @@ These caps are now leaderboard-aggressive but remain bounded by `rules.md`: marg
 | Single-instrument share target | Opportunistic | Track time above `90%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
 | Net directional exposure target | Opportunistic | Track time above `95%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
 | Max open positions | 5 | One position per allowed symbol | Prevents duplicated exposure. |
-| Normal drawdown guard | `5%` total drawdown | Defensive sizing | Preserves capital. |
-| No-new-risk drawdown | `8%` total drawdown | Entry risk fraction becomes zero | Avoids drawdown spiral. |
-| Hard risk-reduction drawdown | `10%` total drawdown | Reduce/flatten when live-approved mechanics exist | Survival over signal. |
-| Round/daily drawdown guard | `5%` | Defensive sizing | Aligns with elimination cadence. |
+| Drawdown optimization | Disabled for qualification sprint | Drawdown alone does not block new entries | Return rank is the active priority before the finals reset. |
 | Kill switch | Local flag or config state | Block entries and allow reductions only | Manual safety override. |
 
 Symbol leverage caps:

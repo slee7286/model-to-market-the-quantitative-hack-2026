@@ -20,8 +20,10 @@ import pandas as pd
 
 from mt5_crypto_bot.constants import (
     ALLOWED_SYMBOLS,
+    BROKER_STOP_DISTANCE_BUFFER_POINTS,
     DEFAULT_DATABASE_URL,
     DEFAULT_STRATEGY_VERSION,
+    PNL_SPRINT_ENTRY_SYMBOLS,
 )
 from mt5_crypto_bot.features import (
     FeatureConfig,
@@ -308,6 +310,38 @@ class DryRunStrategyEngine:
             )
             return signal, None
 
+        if symbol not in PNL_SPRINT_ENTRY_SYMBOLS:
+            if abs(current_leverage) > EPSILON:
+                held_direction, held_leverage = _held_position_target(current_leverage)
+                signal = self._signal(
+                    symbol=symbol,
+                    now_utc=now,
+                    feature_time=feature_time,
+                    direction=held_direction,
+                    score=score,
+                    target_leverage=held_leverage,
+                    target_volume=current_volume if current_volume > 0 else None,
+                    target_price=None,
+                    features=feature_payload,
+                    decision=SignalDecision.HOLD,
+                    reason="hold: PnL sprint blocks adding exposure for this symbol",
+                )
+                return signal, None
+            signal = self._signal(
+                symbol=symbol,
+                now_utc=now,
+                feature_time=feature_time,
+                direction=Direction.FLAT,
+                score=score,
+                target_leverage=0.0,
+                target_volume=None,
+                target_price=None,
+                features=feature_payload,
+                decision=SignalDecision.BLOCK,
+                reason="block: PnL sprint disables new entries for this symbol",
+            )
+            return signal, None
+
         entry_block = _entry_block_reason(data, symbol, candidate_side)
         if entry_block is not None:
             signal = self._signal(
@@ -344,7 +378,7 @@ class DryRunStrategyEngine:
                 target_price=None,
                 features=feature_payload,
                 decision=SignalDecision.BLOCK,
-                reason="block: drawdown scale or target leverage is zero",
+                reason="block: target leverage is zero",
             )
             return signal, None
 
@@ -792,16 +826,14 @@ def _target_leverage(
     params: StrategyParams,
     max_drawdown: float,
 ) -> float:
-    if max_drawdown >= 0.08:
-        return 0.0
+    del max_drawdown
     # Ramp position size from 0 at the entry threshold to full over the next 1.0
     # of score, so a lower entry threshold still sizes small near the boundary.
     score_scale = _clamp((abs(score) - params.entry_threshold) / 1.0, 0.0, 1.0)
-    drawdown_scale = _drawdown_scale(max_drawdown)
     vol_scale = _vol_scale(symbol, rv_1h_equiv)
     normal_cap = min(NORMAL_SYMBOL_LEVERAGE_CAP[symbol], params.max_symbol_leverage)
     hard_cap = min(HARD_SYMBOL_LEVERAGE_CAP[symbol], params.max_symbol_leverage)
-    target = normal_cap * (0.35 + 0.65 * score_scale) * vol_scale * drawdown_scale
+    target = normal_cap * (0.35 + 0.65 * score_scale) * vol_scale
     return min(max(target, 0.0), hard_cap, params.max_gross_leverage)
 
 
@@ -817,7 +849,6 @@ def _entry_sizing(
     equity: float,
     params: StrategyParams,
 ) -> _SizingResult:
-    del params
     order_side = OrderSide.BUY if side == Direction.LONG else OrderSide.SELL
     entry_price = _entry_price(row, order_side)
     if entry_price is None:
@@ -827,10 +858,9 @@ def _entry_sizing(
     point = metadata.point
     if atr is None or spread is None or point is None:
         return _SizingResult(block_reason="block: stop inputs unavailable")
-    stop_distance = 1.6 * atr
-    min_stop_distance = max(3.0 * spread, 5.0 * point)
-    if stop_distance < min_stop_distance:
-        return _SizingResult(block_reason="block: stop distance below minimum")
+    min_stop_distance = max(3.0 * spread, _metadata_min_stop_distance(metadata))
+    stop_distance = max(params.atr_stop_multiple * atr, min_stop_distance)
+    take_profit_distance = max(params.take_profit_multiple * atr, min_stop_distance)
     target_volume = _volume_for_leverage(
         target_leverage,
         price=entry_price,
@@ -845,11 +875,11 @@ def _entry_sizing(
     if side == Direction.LONG:
         order_volume = target_volume - current_volume if signed_current > 0 else target_volume + current_volume
         stop_loss = _round_price(entry_price - stop_distance, metadata)
-        take_profit = _round_price(entry_price + 2.4 * atr, metadata)
+        take_profit = _round_price(entry_price + take_profit_distance, metadata)
     else:
         order_volume = target_volume - current_volume if signed_current < 0 else target_volume + current_volume
         stop_loss = _round_price(entry_price + stop_distance, metadata)
-        take_profit = _round_price(entry_price - 2.4 * atr, metadata)
+        take_profit = _round_price(entry_price - take_profit_distance, metadata)
     order_volume = _round_volume(order_volume, metadata)
     if order_volume is None or order_volume <= 0:
         return _SizingResult(block_reason="block: order volume rounds to zero")
@@ -949,6 +979,15 @@ def _round_price(value: float, metadata: SymbolConfig) -> float | None:
     return float(rounded)
 
 
+def _metadata_min_stop_distance(metadata: SymbolConfig) -> float:
+    point = metadata.point
+    if point is None or point <= 0:
+        return 0.0
+    raw = metadata.raw if isinstance(metadata.raw, Mapping) else {}
+    stops_level = _as_optional_float(raw.get("trade_stops_level")) or 0.0
+    return max(5.0 * point, (stops_level + BROKER_STOP_DISTANCE_BUFFER_POINTS) * point)
+
+
 def _held_position_target(current_leverage: float) -> tuple[Direction, float]:
     if current_leverage > EPSILON:
         return Direction.LONG, abs(current_leverage)
@@ -961,16 +1000,6 @@ def _already_at_or_beyond_target(current_leverage: float, signed_target: float) 
     if signed_target > 0:
         return current_leverage >= signed_target - EPSILON
     return current_leverage <= signed_target + EPSILON
-
-
-def _drawdown_scale(max_drawdown: float) -> float:
-    if max_drawdown >= 0.08:
-        return 0.0
-    if max_drawdown >= 0.05:
-        return 0.25
-    if max_drawdown >= 0.03:
-        return 0.50
-    return 1.0
 
 
 def _vol_scale(symbol: str, rv_1h_equiv: float | None) -> float:

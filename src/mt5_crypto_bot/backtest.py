@@ -18,7 +18,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from mt5_crypto_bot.constants import ALLOWED_SYMBOLS, DEFAULT_DATABASE_URL
+from mt5_crypto_bot.constants import (
+    ALLOWED_SYMBOLS,
+    DEFAULT_DATABASE_URL,
+    PNL_SPRINT_ENTRY_SYMBOLS,
+)
 from mt5_crypto_bot.features import (
     FeatureConfig,
     FeatureEngineeringError,
@@ -98,7 +102,7 @@ class BacktestConfig:
 
     initial_equity: float = INITIAL_EQUITY
     entry_threshold: float = 1.25
-    exit_threshold: float = 0.50
+    exit_threshold: float = 0.75
     max_gross_leverage: float = 27.0
     target_gross_leverage: float = 24.0
     max_margin_usage: float = 0.90
@@ -149,7 +153,7 @@ STRATEGY_SPECS: tuple[StrategySpec, ...] = (
         display_name="MVP momo_v1: BTC-regime volatility-managed momentum",
         kind="mvp",
         entry_threshold=1.25,
-        exit_threshold=0.50,
+        exit_threshold=0.75,
     ),
     StrategySpec(
         name="volatility_managed_momentum",
@@ -623,6 +627,11 @@ def _stateful_targets(
             current_target = 0.0
             targets.append(current_target)
             reasons.append(exit_reason)
+            continue
+
+        if spec.kind == "mvp" and symbol not in PNL_SPRINT_ENTRY_SYMBOLS:
+            targets.append(current_target)
+            reasons.append("hold: PnL sprint disables new entries for symbol")
             continue
 
         long_gate = _long_gate(row, score, spec)

@@ -22,7 +22,7 @@ from mt5_crypto_bot.storage import SQLiteStore
 
 
 DEFAULT_ENTRY_GRID: tuple[float, ...] = (0.15, 0.25, 0.35, 0.55, 0.75, 1.0, 1.25, 1.5)
-DEFAULT_EXIT_GRID: tuple[float, ...] = (0.05, 0.10, 0.15, 0.25, 0.35, 0.50)
+DEFAULT_EXIT_GRID: tuple[float, ...] = (0.05, 0.10, 0.15, 0.25, 0.35, 0.50, 0.75)
 MIN_RECOMMENDATION_ROWS = 20
 TARGET_RECOMMENDED_TRADES = 30
 MAX_REASONABLE_TRADE_SHARE = 0.35
@@ -101,8 +101,8 @@ def recommend_thresholds_from_store(
 
     The evaluation is deliberately lightweight: it replays a threshold state
     machine over historical signal scores, applies an approximate spread cost,
-    and ranks candidate pairs by return, drawdown, Sharpe, and trade-frequency
-    discipline. This is a diagnostic recommendation only.
+    and ranks candidate pairs by return only during the qualification PnL
+    sprint. This is a diagnostic recommendation only.
     """
 
     symbols = normalize_symbols(target_symbols)
@@ -316,14 +316,8 @@ def _evaluate_threshold_pair(
     max_drawdown = float(drawdown if math.isfinite(float(drawdown)) else 0.0)
     inactivity_penalty = max(0, TARGET_RECOMMENDED_TRADES - trade_count) * 1.5
     churn_penalty = max(0.0, trade_count - len(series) * MAX_REASONABLE_TRADE_SHARE) * 0.25
-    objective = (
-        total
-        - 0.7 * max_drawdown
-        + 10.0 * sharpe
-        - 0.10 * trade_count
-        - inactivity_penalty
-        - churn_penalty
-    )
+    del inactivity_penalty, churn_penalty
+    objective = total
     return ThresholdEvaluation(
         entry_threshold=float(entry_threshold),
         exit_threshold=float(exit_threshold),

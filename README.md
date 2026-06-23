@@ -275,7 +275,7 @@ state by default. It checks:
 - spread bps against the frozen symbol caps;
 - gross leverage, per-symbol leverage, margin usage, concentration, and net
   directional exposure;
-- drawdown no-new-risk and hard guards;
+- PnL-sprint drawdown handling, where drawdown alone no longer blocks entries;
 - minimum stop distance;
 - broker volume min/max/step;
 - local kill switch state.
@@ -285,7 +285,8 @@ The current aggressive competition profile blocks projected gross leverage above
 maximum and below the rules' leverage penalty band that begins above 28x. The
 strategy no longer uses low per-symbol leverage clamps; concentration and net
 direction are still tracked against the `rules.md` time-based discipline bands,
-with no-new-risk behavior from 8% drawdown.
+while drawdown and Sharpe are not optimization targets for the qualification
+PnL sprint.
 
 Print current MT5 account and risk state with read-only MT5 calls:
 
@@ -451,28 +452,33 @@ Parameter proposals use only coarse grids around the frozen `momo_v1`
 parameters:
 
 - `entry_threshold`: `1.0`, `1.25`, `1.5`
-- `exit_threshold`: `0.25`, `0.35`, `0.5`
+- `exit_threshold`: `0.25`, `0.35`, `0.5`, `0.75`
 - `atr_stop_multiple`: `1.2`, `1.6`, `2.0`
 - `take_profit_multiple`: `1.8`, `2.4`, `3.0`
 
 The proposal loop does not automatically increase `risk_per_trade`, gross
-leverage, symbol leverage, margin usage, or drawdown limits. Proposed rows are
-stored in `strategy_versions` with `active=0`, no approver, and no approval
-timestamp.
+leverage, symbol leverage, or margin usage. Proposed rows are stored in
+`strategy_versions` with `active=0`, no approver, and no approval timestamp.
 
-Current empirical live baseline after the 2026-06-23 overnight review is
-`ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.50`. The update raises the entry
-bar from the high-churn `1.0 / 0.05` setting and exits faster when momentum
-weakens. A later leaderboard-driven update raised the live sizing envelope to a
-27x gross-leverage cap with a 90% margin-usage cap. Live approval gates remain
-unchanged.
+Current PnL-sprint live baseline through the 2026-06-24 22:00 BST qualification
+cutoff is `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.75`. Stored signal replay
+scored by return only favored this pair over `1.25 / 0.50`. The live sizing
+envelope remains a 27x gross-leverage cap with a 90% margin-usage cap. Live
+approval gates remain unchanged.
+
+Latest collected-data replay favors opening/adding exposure only on
+`BTC/USD`, `ETH/USD`, and `SOL/USD` for this sprint. `BAR/USD` and `XRP/USD`
+remain in the allowed collection/audit universe, and any existing exposure can
+still be exited, but fresh BAR/XRP entries are blocked by default until later
+data justifies re-enabling them. In the stored replay this changed `momo_v1`
+from about `-11.4%` across all five symbols to about `+27.1%` on the
+BTC/ETH/SOL sprint entry set.
 
 Manual approval workflow:
 
 1. Review the inactive `strategy_versions` rows created by analytics.
 2. Backtest the candidate on non-fixture history and compare it with `momo_v1`.
-3. Run a bounded dry-run/shadow session and inspect risk blocks, spread costs,
-   and drawdown.
+3. Run a bounded dry-run/shadow session and inspect risk blocks and spread costs.
 4. Reject any candidate that increases leverage, margin usage, risk per trade,
    or symbol caps without explicit human approval.
 5. Promote a candidate only through a separate manual approval change that marks
