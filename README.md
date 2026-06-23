@@ -1,6 +1,6 @@
 # MT5 Crypto Bot
 
-Dry-run-first Python scaffold for the Model to Market hackathon crypto bot.
+Dry-run-first, guarded-live-capable Python bot for the Model to Market hackathon crypto competition.
 
 The project is constrained to the allowed crypto instruments from `rules.md`:
 
@@ -10,11 +10,13 @@ The project is constrained to the allowed crypto instruments from `rules.md`:
 - `SOL/USD`
 - `XRP/USD`
 
-Live trading is not enabled in this scaffold. Execution records dry-run results only unless a separate future live-approval workflow is implemented and explicitly approved.
+Dry-run remains the default path. Guarded live trading now exists as a separate runner, `scripts/run_bot_live.py`, but it fails closed unless `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json` are both present. Do not run live orders without explicit go-live approval.
 
 ## Current Scope
 
-The project currently includes the dry-run-first package scaffold, typed configuration and schemas, a read-only MT5 connection verification script, read-only symbol discovery/metadata bootstrap, local SQLite storage, a read-only market data collector, deterministic feature engineering, an offline backtester, a dry-run strategy engine, a pre-trade risk engine, a dry-run execution engine, and an offline analytics/retuning proposal loop. It intentionally does not enable live trading.
+The project currently includes the Python package scaffold, typed configuration and schemas, read-only MT5 connection verification, read-only symbol discovery/metadata bootstrap, SQLite storage, live/read-only market data collection, deterministic feature engineering, an offline backtester, the `momo_v1` strategy engine, a pre-trade risk engine, dry-run execution, guarded live execution, reconciliation helpers, and an offline analytics/retuning proposal loop.
+
+The main remaining work is deployment and presentation: sponsor integrations, read-only demo/report generation, readiness review, post-round/final reports, and the final Northflank 24/7 path so the bot can operate without the laptop staying open.
 
 ## Setup
 
@@ -313,12 +315,29 @@ In `dry_run`, the engine:
 - does not call MT5 `order_check`;
 - does not call MT5 `order_send`.
 
-The module also contains request-building helpers for a future live workflow and
-read-only reconciliation helpers for `positions_get` and `history_deals_get`.
-Any future live submission path is guarded by both `TRADE_MODE=live` and a
-separate approval artifact such as `config/LIVE_APPROVED.json`; this repository
-does not create that file, and the current `BotConfig` rejects live mode in the
-non-live build.
+The module also contains guarded live execution helpers and read-only reconciliation helpers for `positions_get` and `history_deals_get`. The shared `BotConfig` still rejects `TRADE_MODE=live`; live execution is enabled only inside the separate guarded runner after approval gates pass.
+
+## Guarded Live Runner
+
+Live execution uses a separate command:
+
+```powershell
+python scripts/run_bot_live.py --minutes 30 --poll-seconds 15 --kill-switch-file config/KILL_SWITCH
+```
+
+It will not place orders unless all live gates pass:
+
+- `LIVE_APPROVED=true` is set in the runtime shell;
+- `config/LIVE_APPROVED.json` exists, is valid JSON, and contains `live_approved=true` or `approved=true`;
+- the approval scope includes every requested symbol;
+- requested runtime does not exceed approval `max_minutes`, when provided;
+- broker symbol mapping and fresh MT5 data are available;
+- risk checks approve an order;
+- `order_check` succeeds before `order_send`.
+
+The dry-run runner is never converted into live mode. Keep `.env` as `TRADE_MODE=dry_run` even when using the live runner; the live runner uses its own explicit approval gate.
+
+See [docs/run_live_trading.md](docs/run_live_trading.md) for the full procedure.
 
 ## End-To-End Dry Run
 
@@ -455,6 +474,7 @@ src/mt5_crypto_bot/
   storage.py
   data_collector.py
   dry_run.py
+  live.py
   features.py
   strategy.py
   risk.py
@@ -477,6 +497,7 @@ scripts/
   run_strategy_once.py
   run_bot_live.py
   run_bot_dry_run.py
+  run_bot_live.py
   print_risk_state.py
 tests/
   test_package_import.py
@@ -488,7 +509,19 @@ tests/
   test_analytics.py
   test_continuous_improvement.py
   test_thresholds.py
+  test_live.py
 ```
+
+## Northflank 24/7 Plan
+
+Local MT5 Python execution depends on the Windows MetaTrader 5 terminal, so a normal Northflank Linux container should not be assumed to run the local terminal directly. The final deployment step should use one of these routes:
+
+| Route | Use When | Notes |
+| --- | --- | --- |
+| Northflank support services | Need Postgres, dashboard, reports, analytics, and logs while execution remains on a Windows MT5 host | Lowest implementation risk; does not remove laptop dependency unless the Windows host is cloud/always-on. |
+| Northflank worker plus MT5 cloud bridge | Need true 24/7 operation without laptop | Use a verified bridge such as MetaApi with a custom MT5 provisioning profile and `servers.dat` for the private competition server. Keep the same live approval gates and mocked tests. |
+
+The final playbook prompt is Prompt 23: Northflank 24/7 deployment. It should add any cloud bridge adapter, Northflank deployment docs, secret-group plan, Postgres setup, worker/dashboard commands, health checks, kill-switch behavior, and mocked tests without running live orders. See [docs/northflank_24_7_deployment.md](docs/northflank_24_7_deployment.md) for the current plan.
 
 ## Safety Notes
 
@@ -498,3 +531,4 @@ tests/
 - Sponsor integrations are optional and must not sit in the blocking execution path.
 - LLM outputs may summarize or propose ideas, but must not directly control live trading.
 - No fully autonomous live parameter changes are allowed.
+- `scripts/run_bot_live.py` is the only local live runner and must remain approval-gated.

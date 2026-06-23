@@ -2,7 +2,7 @@
 
 This guide is the operational runbook for the **guarded live runner** that actually places orders on MetaTrader 5. It is the live-trading companion to `docs/run_bot_and_live_orders.md`, which covers dry-run operation and readiness. As with that document, `rules.md` is the highest-priority source of truth. If any blueprint, strategy doc, or implementation note conflicts with `rules.md`, follow `rules.md` and document the conflict before changing code.
 
-Live trading is **off by default and fails closed**. The shared `BotConfig` rejects `TRADE_MODE=live` outright (`src/mt5_crypto_bot/config.py`). The only path that can call MT5 `order_check` and `order_send` is the separate script `scripts/run_bot_live.py`, and it refuses to run unless every approval gate below passes. Never use `scripts/run_bot_dry_run.py` for live trading — it is dry-run only.
+Live trading is **off by default and fails closed**. The shared `BotConfig` rejects `TRADE_MODE=live` outright (`src/mt5_crypto_bot/config.py`). The only path that can call MT5 `order_check` and `order_send` is the separate script `scripts/run_bot_live.py`, and it refuses to run unless every approval gate below passes. Never use `scripts/run_bot_dry_run.py` for live trading; it is dry-run only.
 
 > Do not place live orders unless the user has given an explicit, separate go-live approval. Configuring the gates described here **is** that approval action; do not perform these steps speculatively.
 
@@ -60,7 +60,7 @@ The `[mt5]` extra installs the `MetaTrader5` package, which is required for live
 
 ## 4. Environment Variables
 
-Create `.env` locally (gitignored). Note that `TRADE_MODE` stays `dry_run` even for live trading — the live runner enables live execution through a separate `ExecutionEngine(trade_mode="live")` override, and `build_mt5_credentials` actually *requires* `TRADE_MODE=dry_run` in shared config. The `LIVE_APPROVED` flag, not `TRADE_MODE`, is the live gate.
+Create `.env` locally (gitignored). Note that `TRADE_MODE` stays `dry_run` even for live trading. The live runner enables live execution through a separate `ExecutionEngine(trade_mode="live")` override, and `build_mt5_credentials` actually *requires* `TRADE_MODE=dry_run` in shared config. The `LIVE_APPROVED` flag, not `TRADE_MODE`, is the live gate.
 
 ```dotenv
 TRADE_MODE=dry_run
@@ -154,7 +154,7 @@ Key flags (`scripts/run_bot_live.py`):
 
 | Flag | Default | Purpose |
 | --- | --- | --- |
-| `--minutes` | required | Positive bounded live runtime. Must be ≤ approval `max_minutes`. |
+| `--minutes` | required | Positive bounded live runtime. Must be less than or equal to approval `max_minutes`. |
 | `--poll-seconds` | 15 | Seconds between cycles. Minimum 5. |
 | `--env-file` | `.env` | Local dotenv path. |
 | `--database-url` | from config | SQLite database URL/path. |
@@ -215,7 +215,7 @@ Default database: `data/trading.db`. Live runs reuse the same schema as dry-run,
 
 | Table | Purpose |
 | --- | --- |
-| `orders` | Order intents and execution results. Live rows have `trade_mode='live'` and statuses from §9. |
+| `orders` | Order intents and execution results. Live rows have `trade_mode='live'` and statuses from section 9. |
 | `positions_snapshots` | Open positions read via `positions_get` after each execution batch. |
 | `fills` | Deal history read via `history_deals_get`. |
 | `risk_checks` | Pre-trade risk decisions (blocked and approved). |
@@ -283,7 +283,7 @@ python scripts/bootstrap_symbols.py
 python scripts/run_bot_dry_run.py --once --no-fixture-fallback
 ```
 
-5. Run the safety tests (§12).
+5. Run the safety tests in section 12.
 6. Create `config/LIVE_APPROVED.json` with the correct `scope` and `max_minutes`.
 7. Set the runtime gate: `$env:LIVE_APPROVED = "true"`.
 
@@ -306,7 +306,7 @@ After the session:
 | Symptom | Likely Cause | Action |
 | --- | --- | --- |
 | `live execution requires LIVE_APPROVED=true ...` | Runtime gate not set | `$env:LIVE_APPROVED = "true"` in the same shell. |
-| `live execution requires approval file ...` | `config/LIVE_APPROVED.json` missing | Create the approval file (§6). |
+| `live execution requires approval file ...` | `config/LIVE_APPROVED.json` missing | Create the approval file described in section 6. |
 | `live approval file must contain live_approved=true or approved=true` | Approval payload not truthy | Set `live_approved: true` in the file. |
 | `live approval scope does not include requested symbols: ...` | `--symbols` outside approval `scope` | Widen `scope` or narrow `--symbols`. |
 | `requested live runtime ... exceeds approval max_minutes=...` | `--minutes` too large | Lower `--minutes` or raise `max_minutes`. |
@@ -331,5 +331,9 @@ The build is ready for a guarded live session when all of these hold:
 | Audit trail | Successful sends stored as `trade_mode='live'` rows with `order_check`/`order_send` payloads. |
 | Rules compliance | Only the five allowed crypto instruments are requested and traded. |
 | Bounded + interruptible | `--minutes` set, kill switch path available. |
-</content>
-</invoke>
+
+## 16. Northflank 24/7 Note
+
+The local guarded runner depends on the Windows MetaTrader 5 terminal through the `MetaTrader5` Python package. Do not assume this local terminal path can run directly inside a normal Northflank Linux container.
+
+For 24/7 operation without the laptop, use Prompt 23 in `codex_mt5_crypto_implementation_playbook.md` and the plan in `docs/northflank_24_7_deployment.md`. The preferred route is a Northflank worker plus a verified MT5 cloud bridge, such as MetaApi with a custom provisioning profile and `servers.dat` for the private MT5 server. The fallback route is Northflank Postgres/dashboard/analytics while an always-on Windows MT5 host runs execution.

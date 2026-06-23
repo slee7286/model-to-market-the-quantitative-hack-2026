@@ -2,15 +2,15 @@
 
 This guide is the operational runbook for the current MT5 crypto bot. It follows `rules.md` as the highest-priority source of truth. If any previous blueprint or implementation note conflicts with `rules.md`, use `rules.md` and document the conflict before changing code.
 
-The current repository is complete for end-to-end dry-run operation. It is intentionally not a live-trading build: no provided script calls MT5 `order_check` or `order_send`, and `BotConfig` rejects `TRADE_MODE=live`. Live orders require a separate explicit go-live approval prompt and a small guarded live-runner implementation step.
+The current repository is complete for end-to-end dry-run operation and includes a separate guarded live runner. `scripts/run_bot_dry_run.py` remains dry-run only. `scripts/run_bot_live.py` is the only local script that can call MT5 `order_check` and `order_send`, and it fails closed unless `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json` are both present. `BotConfig` still rejects `TRADE_MODE=live`; keep `.env` as `TRADE_MODE=dry_run`.
 
 ## 1. Safety Contract
 
 | Area | Required Behavior |
 | --- | --- |
 | Instruments | Trade only `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. |
-| Default mode | Use dry-run or paper mode only. |
-| Live orders | Do not place live orders unless the user explicitly gives a separate go-live approval. |
+| Default mode | Use dry-run or paper mode unless running the separate guarded live runner after approval. |
+| Live orders | Do not place live orders unless the user explicitly gives a separate go-live approval and both live gates are present. |
 | Polling | Keep polling conservative. The dry-run runner enforces a minimum of 5 seconds; 15 seconds is the recommended default. |
 | Rules priority | `rules.md` overrides `mt5_crypto_trading_blueprint.md`, strategy docs, prompts, and external docs. |
 | Learning loop | Do not allow autonomous online learning to change live trading behavior without validation and human approval. |
@@ -440,7 +440,7 @@ Never let the model self-modify live parameters based only on recent performance
 | Symptom | Likely Cause | Action |
 | --- | --- | --- |
 | `symbol map not found` | `config/symbol_map.json` has not been created | Run `scripts/bootstrap_symbols.py` after MT5 credentials are configured, or use fixture fallback for offline smoke tests. |
-| `TRADE_MODE=live` validation error | Current build intentionally rejects live config | Use `dry_run` or request a separate go-live implementation. |
+| `TRADE_MODE=live` validation error | Shared config intentionally rejects live config | Keep `.env` as `dry_run`; use `scripts/run_bot_live.py` only after live approval gates are present. |
 | No order intents | Strategy scores are inside thresholds, data is stale, or activation gates failed | Inspect signal reasons and feature freshness. |
 | Risk checks block orders | Internal leverage, concentration, margin, spread, stale-data, or stop-distance guard triggered | Inspect `risk_checks.reason`; do not loosen caps without evidence. |
 | `pytest` missing | Dev dependencies are not installed | Use `python -m unittest ...` or install `python -m pip install -e ".[dev]"`. |

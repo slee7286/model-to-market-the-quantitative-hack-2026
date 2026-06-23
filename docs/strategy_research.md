@@ -10,7 +10,9 @@ This document translates local competition constraints and external crypto quant
 - `SOL/USD`
 - `XRP/USD`
 
-No trading code is implemented in this phase. All later execution paths must remain dry-run or paper mode unless a separate future live-approval workflow is explicitly completed.
+No trading code was implemented in this phase. All unattended execution paths must remain dry-run, paper, read-only, or test/report generation unless a separate live-approval workflow is explicitly completed.
+
+Current status update: later prompts have implemented the dry-run pipeline, offline analytics, and a separate guarded live runner. This research document remains the justification for `momo_v1`, but operational live trading must follow `docs/run_live_trading.md` and cannot run without `LIVE_APPROVED=true` plus `config/LIVE_APPROVED.json`.
 
 ## Rules-First Constraints
 
