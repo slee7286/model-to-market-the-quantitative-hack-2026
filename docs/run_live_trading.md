@@ -38,12 +38,12 @@ Competition-relevant risk limits from `rules.md` (enforced by the same `RiskEngi
 2. **Collect fresh, real MT5 data.** `collect_market_account_once` reads bars, ticks, symbol metadata, account state, and positions. There is no fixture fallback in this path.
 3. **Compute features** with `require_data=True` (freshness enforced).
 4. **Generate `momo_v1` signals** with `enforce_freshness=True` and `latest_only=True`, recording the active strategy version (`approved_by="guarded_live"`).
-5. **Run risk checks** with `RiskEngine` and the kill-switch file. Only approved orders proceed.
+5. **Run retry suppression, then risk checks.** The session-level `OrderRetryGuard` skips exact duplicate order intents that already failed risk/execution in the same run. Changed signals, changed prices, changed volumes, or expired cooldowns are evaluated normally. Remaining intents go through `RiskEngine` and the kill-switch file. Only approved orders proceed.
 6. **Execute approved orders** through `_execute_live_approved_orders`: initialize and log into MT5, then for each approved order call `order_check`, and only on a passing retcode call `order_send`. Every request and result is stored.
 7. **Reconcile** by reading open positions (`positions_get`) and recent deal history (`history_deals_get`) into the database. These are read-only.
 8. After the session, print cycle counts and the last-cycle summary as JSON.
 
-If there are no risk-approved orders in a cycle, the execution step returns an empty result and MT5 trading APIs are not called for that cycle.
+If there are no risk-approved orders in a cycle, the execution step returns an empty result and MT5 trading APIs are not called for that cycle. If an unchanged failed intent is suppressed, terminal output shows a `SUPPRESS` line with the prior failure reason and the `suppressed_until_utc` timestamp instead of creating another duplicate risk-check/order attempt.
 
 ## 3. Project Setup
 

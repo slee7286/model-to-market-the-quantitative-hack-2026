@@ -429,6 +429,13 @@ During a longer run, use lightweight read-only snapshots every N cycles:
 python scripts/run_bot_live.py --minutes 120 --poll-seconds 15 --improvement-every-cycles 20
 ```
 
+Live sessions include an exact-intent retry guard. If the same order intent has
+already failed a risk check, live precheck, `order_check`, or `order_send`, later
+cycles suppress that unchanged duplicate for a cooldown window and print a
+`SUPPRESS` line instead of repeatedly creating new risk checks or broker
+attempts. A new feature bar, changed price/volume/stops, or expired cooldown is
+treated as a fresh intent.
+
 Reports are written under `reports/analytics/` and include:
 
 - return, max drawdown, and non-annualized 15-minute Sharpe;
