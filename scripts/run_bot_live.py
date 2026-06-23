@@ -23,6 +23,11 @@ if str(SRC_DIR) not in sys.path:
 from pydantic import ValidationError
 
 from mt5_crypto_bot.config import load_config
+from mt5_crypto_bot.continuous_improvement import (
+    ContinuousImprovementConfig,
+    ContinuousImprovementError,
+    run_continuous_improvement_from_store,
+)
 from mt5_crypto_bot.data_collector import DEFAULT_BAR_COUNT, CollectorSettings
 from mt5_crypto_bot.dry_run import MIN_DRY_RUN_POLL_SECONDS
 from mt5_crypto_bot.execution import DEFAULT_LIVE_APPROVAL_FILE, LiveTradingApprovalError
@@ -34,6 +39,7 @@ from mt5_crypto_bot.live import (
 )
 from mt5_crypto_bot.schemas import ExecutionResult, ExecutionStatus, normalize_symbols
 from mt5_crypto_bot.symbols import DEFAULT_SYMBOL_MAP_PATH
+from mt5_crypto_bot.thresholds import recommend_thresholds_from_store
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -104,6 +110,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
         help="Python logging level.",
     )
+    parser.add_argument(
+        "--improvement-after-run",
+        action="store_true",
+        help="Run the full offline continuous-improvement report after the live session ends.",
+    )
+    parser.add_argument(
+        "--improvement-every-cycles",
+        type=int,
+        default=0,
+        help=(
+            "Run a lightweight offline improvement snapshot every N live cycles. "
+            "Default 0 disables during-run snapshots."
+        ),
+    )
+    parser.add_argument(
+        "--improvement-output-dir",
+        default="reports/continuous_improvement",
+        help="Directory for optional continuous-improvement artifacts.",
+    )
     return parser.parse_args(argv)
 
 
@@ -137,14 +162,48 @@ def _not_placed_reason(result: ExecutionResult) -> str:
     return "; ".join(parts) or "no reason recorded"
 
 
+def _print_execution_diagnostics(execution: ExecutionResult) -> None:
+    payload = execution.result or {}
+    precheck = payload.get("live_precheck") if isinstance(payload, dict) else None
+    if not isinstance(precheck, dict):
+        return
+    refresh = precheck.get("live_refresh") or {}
+    liquidity = precheck.get("liquidity") or {}
+    if isinstance(refresh, dict):
+        print(
+            "      LIVE   : "
+            f"price={refresh.get('live_requested_price')} "
+            f"bid={refresh.get('live_bid')} ask={refresh.get('live_ask')} "
+            f"tick_age_s={refresh.get('live_tick_age_seconds')} "
+            f"sl={refresh.get('refreshed_stop_loss')} tp={refresh.get('refreshed_take_profit')}",
+            flush=True,
+        )
+    if isinstance(liquidity, dict):
+        print(
+            "      LIQ    : "
+            f"source={liquidity.get('source')} "
+            f"visible={liquidity.get('visible_volume')} "
+            f"vol_before={liquidity.get('requested_volume_before')} "
+            f"vol_after={liquidity.get('requested_volume_after')}",
+            flush=True,
+        )
+
+
 def _print_order_outcomes(result: LiveCycleResult, cycle_number: int) -> None:
     """Print every order attempt this cycle: risk verdict and placement result."""
     decisions = result.risk_result.decisions
-    if not decisions:
-        return
     exec_by_id = {res.client_order_id: res for res in result.execution_result.results}
     finished = result.finished_at_utc.isoformat()
-    print(f"\n=== cycle {cycle_number} @ {finished}: {len(decisions)} order attempt(s) ===", flush=True)
+    print(
+        f"\n=== cycle {cycle_number} @ {finished}: "
+        f"{len(decisions)} order attempt(s), "
+        f"{len(result.risk_result.approved_orders)} risk-approved, "
+        f"{result.execution_result.summary()['sent_to_mt5']} sent to MT5 ===",
+        flush=True,
+    )
+    if not decisions:
+        print("  NO ORDER ATTEMPTS THIS CYCLE", flush=True)
+        return
     for decision in decisions:
         intent = decision.order_intent
         if intent is None:
@@ -169,6 +228,7 @@ def _print_order_outcomes(result: LiveCycleResult, cycle_number: int) -> None:
             print("      PLACED : no -> risk-approved but no execution result was recorded", flush=True)
             continue
 
+        _print_execution_diagnostics(execution)
         status = _enum_value(execution.status)
         if status in {ExecutionStatus.FILLED.value, ExecutionStatus.PARTIAL.value}:
             note = "partial fill" if status == ExecutionStatus.PARTIAL.value else "filled"
@@ -183,26 +243,144 @@ def _print_order_outcomes(result: LiveCycleResult, cycle_number: int) -> None:
             print(f"      PLACED : no -> {_not_placed_reason(execution)}", flush=True)
 
 
+def _print_threshold_recommendation(
+    *,
+    database_url: str,
+    symbols: Sequence[str],
+    entry_threshold: float,
+    exit_threshold: float,
+) -> None:
+    try:
+        recommendation = recommend_thresholds_from_store(
+            database_url,
+            target_symbols=symbols,
+            current_entry_threshold=entry_threshold,
+            current_exit_threshold=exit_threshold,
+        )
+    except Exception as exc:
+        print(f"Threshold recommendation unavailable: {exc}", flush=True)
+        print("Continuing with configured thresholds; no parameter changes were made.", flush=True)
+        return
+
+    print("\n=== offline threshold recommendation ===", flush=True)
+    print(
+        f"Current: ENTRY_THRESHOLD={recommendation.current_entry_threshold:g}, "
+        f"EXIT_THRESHOLD={recommendation.current_exit_threshold:g}",
+        flush=True,
+    )
+    print(
+        f"Recommended: ENTRY_THRESHOLD={recommendation.recommended_entry_threshold:g}, "
+        f"EXIT_THRESHOLD={recommendation.recommended_exit_threshold:g}",
+        flush=True,
+    )
+    print(
+        f"Rows={recommendation.evaluated_rows}, pairs={recommendation.evaluated_pairs}, "
+        f"available={recommendation.available}",
+        flush=True,
+    )
+    print(f"Reason: {recommendation.reason}", flush=True)
+    if recommendation.best is not None:
+        print(
+            "Best metrics: "
+            f"return_bps={recommendation.best.total_return_bps:.4g}, "
+            f"drawdown_bps={recommendation.best.max_drawdown_bps:.4g}, "
+            f"sharpe={recommendation.best.sharpe:.4g}, "
+            f"trades={recommendation.best.trade_count}",
+            flush=True,
+        )
+    print("No threshold changes were applied automatically.", flush=True)
+
+
+def _run_improvement_packet(
+    *,
+    config: object,
+    database_url: str,
+    symbols: Sequence[str],
+    output_dir: str,
+    run_id: str,
+    store_proposals: bool,
+    include_backtest: bool,
+) -> None:
+    try:
+        report = run_continuous_improvement_from_store(
+            database_url,
+            target_symbols=symbols,
+            base_params=config.strategy_params(),
+            config=ContinuousImprovementConfig(
+                output_dir=output_dir,
+                run_id=run_id,
+                store_analytics_proposals=store_proposals,
+                store_threshold_candidate=store_proposals,
+                include_shadow_backtest=include_backtest,
+                write_backtest_artifacts=include_backtest,
+            ),
+        )
+    except ContinuousImprovementError as exc:
+        print(f"Continuous-improvement report failed: {exc}", flush=True)
+        raise
+
+    threshold = report.threshold_recommendation
+    print(
+        "\n=== continuous improvement ===\n"
+        "Safety: offline only; no MT5 connection, no order_check/order_send, no auto-promotion.\n"
+        f"Threshold recommendation: current=({threshold.current_entry_threshold:g}, "
+        f"{threshold.current_exit_threshold:g}) recommended=({threshold.recommended_entry_threshold:g}, "
+        f"{threshold.recommended_exit_threshold:g}) available={threshold.available}\n"
+        f"Trade count={report.metrics.get('trade_count')} "
+        f"return={report.metrics.get('return'):.6g} "
+        f"max_dd={report.metrics.get('max_drawdown'):.6g} "
+        f"sharpe_15m={report.metrics.get('sharpe_15m'):.6g}\n"
+        f"Markdown report: {report.paths['markdown']}",
+        flush=True,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
     )
     try:
+        if args.improvement_every_cycles < 0:
+            raise ValueError("--improvement-every-cycles must be >= 0")
         config = load_config(env_file=args.env_file)
         symbols = normalize_symbols(args.symbols) if args.symbols else config.target_symbols
+        database_url = args.database_url or config.database_url
+        _print_threshold_recommendation(
+            database_url=database_url,
+            symbols=symbols,
+            entry_threshold=config.entry_threshold,
+            exit_threshold=config.exit_threshold,
+        )
         collector_settings = CollectorSettings(
             bar_count=args.bar_count,
             tick_backfill_minutes=args.tick_backfill_minutes,
             include_depth=args.include_depth,
         )
+        def on_cycle(result: LiveCycleResult, cycle_number: int) -> None:
+            _print_order_outcomes(result, cycle_number)
+            if args.improvement_every_cycles > 0 and cycle_number % args.improvement_every_cycles == 0:
+                try:
+                    _run_improvement_packet(
+                        config=config,
+                        database_url=database_url,
+                        symbols=symbols,
+                        output_dir=args.improvement_output_dir,
+                        run_id=f"live_cycle_{cycle_number}",
+                        store_proposals=False,
+                        include_backtest=False,
+                    )
+                except ContinuousImprovementError:
+                    print("Continuing live session; improvement snapshot is advisory only.", flush=True)
+
         results = run_live_session(
             config,
             minutes=args.minutes,
             poll_seconds=args.poll_seconds,
-            on_cycle=_print_order_outcomes,
-            database_url=args.database_url,
+            on_cycle=on_cycle,
+            database_url=database_url,
             target_symbols=symbols,
             symbol_map_path=args.symbol_map,
             collector_settings=collector_settings,
@@ -239,6 +417,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if results:
         print("Last cycle summary:")
         print(json.dumps(results[-1].summary(), indent=2, sort_keys=True))
+    if args.improvement_after_run:
+        try:
+            _run_improvement_packet(
+                config=config,
+                database_url=database_url,
+                symbols=symbols,
+                output_dir=args.improvement_output_dir,
+                run_id="after_live_run",
+                store_proposals=True,
+                include_backtest=True,
+            )
+        except ContinuousImprovementError:
+            return 2
     return 0
 
 

@@ -8,6 +8,7 @@ the explicit live-approval gates enforced by ``ExecutionEngine`` before any MT5
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ from mt5_crypto_bot.symbols import DEFAULT_SYMBOL_MAP_PATH
 
 
 DEFAULT_LIVE_POLL_SECONDS = 15.0
+LOGGER = logging.getLogger(__name__)
 
 
 class LiveRunError(RuntimeError):
@@ -153,6 +155,15 @@ def run_live_cycle(
             table: store.count_rows(table)
             for table in ("signals", "risk_checks", "orders", "account_snapshots")
         }
+    LOGGER.info(
+        "live cycle complete symbols=%s signals=%s order_intents=%s approved=%s sent_to_mt5=%s table_counts=%s",
+        len(symbols),
+        len(strategy_result.signals),
+        len(strategy_result.order_intents),
+        len(risk_result.approved_orders),
+        execution_result.summary()["sent_to_mt5"],
+        dict(table_counts),
+    )
     return LiveCycleResult(
         started_at_utc=started_at,
         finished_at_utc=_utc_now(),
@@ -207,12 +218,15 @@ def run_live_session(
             )
             credentials = build_mt5_credentials(config)
             mt5 = load_mt5_module()
+            LOGGER.info("initializing persistent MT5 session")
             initialize_mt5(credentials, mt5)
             initialized = True
+            LOGGER.info("logging in to persistent MT5 session")
             login_mt5(credentials, mt5)
 
         stop_at = time.monotonic() + float(minutes) * 60.0
         while True:
+            LOGGER.info("starting live cycle %s", len(results) + 1)
             cycle_result = run_live_cycle(
                 config,
                 minutes_limit=minutes,

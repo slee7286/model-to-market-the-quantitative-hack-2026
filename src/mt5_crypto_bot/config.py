@@ -156,6 +156,8 @@ class BotConfig(StrictBaseModel):
         """Build strategy parameters from validated config risk caps."""
         return StrategyParams(
             strategy_version=self.strategy_version,
+            entry_threshold=self.entry_threshold,
+            exit_threshold=self.exit_threshold,
             max_gross_leverage=self.max_gross_leverage,
             max_symbol_leverage=self.max_symbol_leverage,
             max_margin_usage=self.max_margin_usage,

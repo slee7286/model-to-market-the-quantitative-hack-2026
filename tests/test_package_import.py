@@ -21,6 +21,7 @@ class PackageImportTests(unittest.TestCase):
             "analytics",
             "app",
             "config",
+            "continuous_improvement",
             "constants",
             "data_collector",
             "execution",

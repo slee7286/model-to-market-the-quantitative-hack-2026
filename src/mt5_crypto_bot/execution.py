@@ -8,6 +8,8 @@ approval artifact before it can even run ``order_check``.
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from pydantic import ValidationError
 
 from mt5_crypto_bot.config import BotConfig
 from mt5_crypto_bot.constants import DEFAULT_DATABASE_URL
+from mt5_crypto_bot.mt5_client import read_last_error
 from mt5_crypto_bot.risk import RiskApprovedOrder
 from mt5_crypto_bot.schemas import (
     ExecutionResult,
@@ -41,6 +44,15 @@ from mt5_crypto_bot.storage import SQLiteStore
 DEFAULT_LIVE_APPROVAL_FILE = Path("config/LIVE_APPROVED.json")
 LIVE_APPROVAL_ENV = "LIVE_APPROVED"
 DRY_RUN_RESULT_MESSAGE = "dry-run only: order intent recorded; no MT5 order_check/order_send called"
+# MT5 rejects order_check/order_send with code -2 ('Invalid "comment" argument')
+# once the comment reaches 30 characters; 29 is the largest length the terminal
+# accepts. Truncating any higher silently fails every order at order_check.
+MT5_MAX_COMMENT_LENGTH = 29
+LIVE_TICK_MAX_AGE_SECONDS = 60.0
+LIQUIDITY_USAGE_FRACTION = 0.80
+EPSILON = 1e-12
+
+LOGGER = logging.getLogger(__name__)
 
 
 class ExecutionEngineError(RuntimeError):
@@ -77,6 +89,13 @@ class ExecutionBatchResult:
             "sent_to_mt5": sent_to_mt5,
             "statuses": [result.status for result in self.results],
         }
+
+
+@dataclass(frozen=True)
+class _PreparedLiveIntent:
+    intent: OrderIntent
+    diagnostics: dict[str, Any]
+    rejection_reason: str | None = None
 
 
 class ExecutionEngine:
@@ -206,14 +225,70 @@ class ExecutionEngine:
         if mt5_module is None:
             raise LiveExecutionError("mt5_module is required for guarded live execution")
 
-        intent = approved_order.order_intent
+        prepared = _prepare_intent_for_live_execution(approved_order.order_intent, mt5_module)
+        intent = prepared.intent
+        if prepared.rejection_reason is not None:
+            result = ExecutionResult(
+                client_order_id=intent.client_order_id,
+                executed_at_utc=_utc_now(),
+                trade_mode=TradeMode.LIVE,
+                status=ExecutionStatus.REJECTED,
+                symbol=intent.symbol,
+                requested_volume=intent.requested_volume,
+                requested_price=intent.requested_price,
+                message=f"live order rejected before order_check: {prepared.rejection_reason}",
+                request={},
+                result={
+                    "sent_to_mt5": False,
+                    "order_check_called": False,
+                    "order_send_called": False,
+                    "live_precheck": prepared.diagnostics,
+                    "risk_approval_id": approved_order.approval_id,
+                    "risk_check_id": approved_order.risk_check.check_id,
+                    "risk_reason": approved_order.risk_check.reason,
+                },
+            )
+            LOGGER.warning(
+                "live precheck rejected order symbol=%s side=%s volume=%s reason=%s diagnostics=%s",
+                intent.symbol,
+                _value(intent.side),
+                intent.requested_volume,
+                prepared.rejection_reason,
+                _compact_json(prepared.diagnostics),
+            )
+            if store is not None:
+                store.upsert_order_intent(intent, status="live_precheck_rejected")
+                store.upsert_execution_result(result)
+            return result
+
         request = build_mt5_order_request(intent, mt5_module=mt5_module, require_broker_symbol=True)
         if store is not None:
             store.upsert_order_intent(intent, status="live_check_pending")
+        LOGGER.info(
+            "live order prepared symbol=%s side=%s volume=%s price=%s sl=%s tp=%s diagnostics=%s",
+            intent.symbol,
+            _value(intent.side),
+            intent.requested_volume,
+            intent.requested_price,
+            intent.stop_loss,
+            intent.take_profit,
+            _compact_json(prepared.diagnostics),
+        )
 
         check_result = mt5_module.order_check(request)
         check_payload = _object_to_mapping(check_result)
+        last_error = read_last_error(mt5_module) if check_result is None else None
         if not _order_check_passed(check_result, mt5_module):
+            LOGGER.warning(
+                "live order_check rejected symbol=%s side=%s volume=%s price=%s retcode=%s check=%s last_error=%s",
+                intent.symbol,
+                _value(intent.side),
+                intent.requested_volume,
+                intent.requested_price,
+                _retcode(check_result),
+                _compact_json(check_payload),
+                _compact_json(last_error),
+            )
             result = ExecutionResult(
                 client_order_id=intent.client_order_id,
                 executed_at_utc=_utc_now(),
@@ -229,7 +304,9 @@ class ExecutionEngine:
                     "sent_to_mt5": False,
                     "order_check_called": True,
                     "order_send_called": False,
+                    "live_precheck": prepared.diagnostics,
                     "order_check": check_payload,
+                    "last_error": last_error,
                 },
             )
             if store is not None:
@@ -238,16 +315,34 @@ class ExecutionEngine:
 
         send_result = mt5_module.order_send(request)
         send_payload = _object_to_mapping(send_result)
+        status = _execution_status_from_send(
+            send_result,
+            mt5_module,
+            requested_volume=intent.requested_volume,
+        )
+        LOGGER.info(
+            "live order_send result symbol=%s side=%s requested_volume=%s filled_volume=%s "
+            "requested_price=%s fill_price=%s status=%s retcode=%s payload=%s",
+            intent.symbol,
+            _value(intent.side),
+            intent.requested_volume,
+            _as_float(send_payload.get("volume")),
+            intent.requested_price,
+            _positive_or_none(send_payload.get("price")),
+            status.value,
+            _retcode(send_result),
+            _compact_json(send_payload),
+        )
         result = ExecutionResult(
             client_order_id=intent.client_order_id,
             executed_at_utc=_utc_now(),
             trade_mode=TradeMode.LIVE,
-            status=_execution_status_from_send(send_result, mt5_module),
+            status=status,
             symbol=intent.symbol,
             requested_volume=intent.requested_volume,
             filled_volume=_as_float(send_payload.get("volume")),
             requested_price=intent.requested_price,
-            average_fill_price=_as_optional_float(send_payload.get("price")),
+            average_fill_price=_positive_or_none(send_payload.get("price")),
             mt5_order_ticket=_as_optional_int(send_payload.get("order")),
             mt5_deal_ticket=_as_optional_int(send_payload.get("deal")),
             retcode=_retcode(send_result),
@@ -257,7 +352,9 @@ class ExecutionEngine:
                 "sent_to_mt5": True,
                 "order_check_called": True,
                 "order_send_called": True,
+                "live_precheck": prepared.diagnostics,
                 "order_check": check_payload,
+                "last_error": last_error,
                 "order_send": send_payload,
             },
         )
@@ -347,6 +444,215 @@ def build_mt5_order_request(
     return request
 
 
+def _prepare_intent_for_live_execution(
+    intent: OrderIntent,
+    mt5_module: Any | None,
+) -> _PreparedLiveIntent:
+    """Refresh live price/SL/TP and apply visible-depth volume controls."""
+
+    refreshed = _refresh_intent_to_live_market(intent, mt5_module)
+    if refreshed.rejection_reason is not None:
+        return refreshed
+    liquidity = _apply_liquidity_constraints(refreshed.intent, mt5_module)
+    diagnostics = dict(refreshed.diagnostics)
+    diagnostics["liquidity"] = liquidity.diagnostics.get("liquidity", liquidity.diagnostics)
+    if liquidity.rejection_reason is not None:
+        return _PreparedLiveIntent(
+            intent=liquidity.intent,
+            diagnostics=diagnostics,
+            rejection_reason=liquidity.rejection_reason,
+        )
+    return _PreparedLiveIntent(intent=liquidity.intent, diagnostics=diagnostics)
+
+
+def _refresh_intent_to_live_market(
+    intent: OrderIntent,
+    mt5_module: Any | None,
+) -> _PreparedLiveIntent:
+    """Re-anchor a market order's price and SL/TP to a fresh live tick."""
+
+    if mt5_module is None:
+        return _PreparedLiveIntent(intent, {}, "MT5 module unavailable")
+    if _value(intent.order_type) != OrderType.MARKET.value:
+        return _PreparedLiveIntent(intent, {"live_refresh": {"skipped": "non-market order"}})
+    if not hasattr(mt5_module, "symbol_info_tick"):
+        return _PreparedLiveIntent(intent, {}, "MT5 symbol_info_tick unavailable")
+
+    broker_symbol = _broker_symbol_from_intent(intent) or intent.symbol
+    tick = _object_to_mapping(mt5_module.symbol_info_tick(broker_symbol))
+    side = _value(intent.side)
+    bid = _as_optional_float(tick.get("bid"))
+    ask = _as_optional_float(tick.get("ask"))
+    new_price = ask if side == OrderSide.BUY.value else bid
+    tick_time = _tick_time_utc(tick)
+    tick_age_seconds = (_utc_now() - tick_time).total_seconds() if tick_time is not None else None
+    diagnostics: dict[str, Any] = {
+        "live_refresh": {
+            "broker_symbol": broker_symbol,
+            "side": side,
+            "original_requested_price": intent.requested_price,
+            "live_bid": bid,
+            "live_ask": ask,
+            "live_tick_time_utc": tick_time.isoformat() if tick_time else None,
+            "live_tick_age_seconds": tick_age_seconds,
+        }
+    }
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return _PreparedLiveIntent(intent, diagnostics, "live bid/ask unavailable or invalid")
+    if new_price is None or new_price <= 0:
+        return _PreparedLiveIntent(intent, diagnostics, "live execution price unavailable")
+    if tick_age_seconds is None:
+        return _PreparedLiveIntent(intent, diagnostics, "live tick timestamp unavailable")
+    if tick_age_seconds < -5:
+        return _PreparedLiveIntent(intent, diagnostics, "live tick timestamp is in the future")
+    if tick_age_seconds > LIVE_TICK_MAX_AGE_SECONDS:
+        return _PreparedLiveIntent(
+            intent,
+            diagnostics,
+            f"live tick is stale ({tick_age_seconds:.1f}s > {LIVE_TICK_MAX_AGE_SECONDS:.1f}s)",
+        )
+
+    info = _object_to_mapping(mt5_module.symbol_info(broker_symbol)) if hasattr(mt5_module, "symbol_info") else {}
+    digits = _as_optional_int(info.get("digits"))
+    point = _as_optional_float(info.get("point")) or 0.0
+    stops_level = _as_optional_int(info.get("trade_stops_level")) or 0
+    min_dist = (stops_level + 1) * point if point > 0 else 0.0
+
+    def _round(value: float) -> float:
+        return round(value, digits) if digits is not None else value
+
+    def _away(level: float, above: bool) -> float:
+        if min_dist <= 0:
+            return level
+        return max(level, new_price + min_dist) if above else min(level, new_price - min_dist)
+
+    update: dict[str, Any] = {"requested_price": _round(new_price)}
+    refresh_payload = diagnostics["live_refresh"]
+    refresh_payload.update(
+        {
+            "live_requested_price": update["requested_price"],
+            "digits": digits,
+            "point": point,
+            "trade_stops_level": stops_level,
+            "min_stop_distance": min_dist,
+        }
+    )
+    old_price = intent.requested_price
+    if old_price is not None and old_price > 0:
+        is_buy = side == OrderSide.BUY.value
+        if intent.stop_loss is not None:
+            stop_offset = intent.stop_loss - old_price
+            sl = new_price + stop_offset
+            update["stop_loss"] = _round(_away(sl, above=not is_buy))
+            refresh_payload["preserved_stop_offset"] = stop_offset
+            refresh_payload["refreshed_stop_loss"] = update["stop_loss"]
+        if intent.take_profit is not None:
+            take_profit_offset = intent.take_profit - old_price
+            tp = new_price + take_profit_offset
+            update["take_profit"] = _round(_away(tp, above=is_buy))
+            refresh_payload["preserved_take_profit_offset"] = take_profit_offset
+            refresh_payload["refreshed_take_profit"] = update["take_profit"]
+
+    metadata = dict(intent.metadata)
+    metadata["dry_run_only"] = False
+    metadata["live_execution"] = True
+    metadata["live_refresh"] = refresh_payload
+    update["metadata"] = metadata
+    return _PreparedLiveIntent(intent.model_copy(update=update), diagnostics)
+
+
+def _apply_liquidity_constraints(
+    intent: OrderIntent,
+    mt5_module: Any | None,
+) -> _PreparedLiveIntent:
+    """Cap market-order volume using visible depth when MT5 exposes it."""
+
+    broker_symbol = _broker_symbol_from_intent(intent) or intent.symbol
+    info = _object_to_mapping(mt5_module.symbol_info(broker_symbol)) if mt5_module is not None and hasattr(mt5_module, "symbol_info") else {}
+    volume_min = _as_optional_float(info.get("volume_min"))
+    volume_max = _as_optional_float(info.get("volume_max"))
+    volume_step = _as_optional_float(info.get("volume_step"))
+    point = _as_optional_float(info.get("point")) or 0.0
+    diagnostics: dict[str, Any] = {
+        "liquidity": {
+            "broker_symbol": broker_symbol,
+            "source": "not_checked",
+            "requested_volume_before": intent.requested_volume,
+            "requested_volume_after": intent.requested_volume,
+            "volume_min": volume_min,
+            "volume_max": volume_max,
+            "volume_step": volume_step,
+            "usage_fraction": LIQUIDITY_USAGE_FRACTION,
+        }
+    }
+    if mt5_module is None or not hasattr(mt5_module, "market_book_get"):
+        diagnostics["liquidity"]["source"] = "market_book_unavailable"
+        return _PreparedLiveIntent(intent, diagnostics)
+
+    book_rows = _read_market_book(mt5_module, broker_symbol)
+    if not book_rows:
+        diagnostics["liquidity"]["source"] = "market_book_empty"
+        return _PreparedLiveIntent(intent, diagnostics)
+
+    side = _value(intent.side)
+    requested_price = _as_optional_float(intent.requested_price)
+    deviation_price = max(float(intent.deviation_points) * point, 0.0) if point > 0 else None
+    eligible = [
+        level
+        for level in book_rows
+        if _book_level_matches_order(
+            level,
+            side=side,
+            mt5_module=mt5_module,
+            requested_price=requested_price,
+            deviation_price=deviation_price,
+        )
+    ]
+    visible_volume = sum(_book_level_volume(level) for level in eligible)
+    diagnostics["liquidity"].update(
+        {
+            "source": "market_book",
+            "depth_levels": len(book_rows),
+            "eligible_levels": len(eligible),
+            "visible_volume": visible_volume,
+            "deviation_points": intent.deviation_points,
+            "deviation_price": deviation_price,
+        }
+    )
+    if visible_volume <= 0:
+        return _PreparedLiveIntent(
+            intent,
+            diagnostics,
+            "no visible liquidity inside deviation window",
+        )
+
+    raw_cap = visible_volume * LIQUIDITY_USAGE_FRACTION
+    capped_volume = min(float(intent.requested_volume), raw_cap)
+    if volume_max is not None and volume_max > 0:
+        capped_volume = min(capped_volume, volume_max)
+    rounded_volume = _round_volume_down(capped_volume, volume_step)
+    diagnostics["liquidity"]["raw_volume_cap"] = raw_cap
+    diagnostics["liquidity"]["requested_volume_after"] = rounded_volume
+    if volume_min is not None and rounded_volume < volume_min:
+        return _PreparedLiveIntent(
+            intent.model_copy(update={"metadata": _metadata_with(intent, "liquidity", diagnostics["liquidity"])}),
+            diagnostics,
+            "visible liquidity cap is below broker minimum volume",
+        )
+    if rounded_volume <= 0:
+        return _PreparedLiveIntent(intent, diagnostics, "visible liquidity cap rounds to zero")
+    if rounded_volume >= float(intent.requested_volume) - EPSILON:
+        metadata = _metadata_with(intent, "liquidity", diagnostics["liquidity"])
+        return _PreparedLiveIntent(intent.model_copy(update={"metadata": metadata}), diagnostics)
+
+    diagnostics["liquidity"]["cap_reason"] = "requested volume reduced to 80% of visible depth"
+    metadata = _metadata_with(intent, "liquidity", diagnostics["liquidity"])
+    return _PreparedLiveIntent(
+        intent.model_copy(update={"requested_volume": rounded_volume, "metadata": metadata}),
+        diagnostics,
+    )
+
+
 def read_positions(
     mt5_module: Any,
     *,
@@ -382,10 +688,11 @@ def read_deals(
     start = _datetime_from_any(date_from) if date_from is not None else _utc_now() - timedelta(days=1)
     end = _datetime_from_any(date_to) if date_to is not None else _utc_now()
     raw_deals = mt5_module.history_deals_get(start, end)
+    order_lookup = _load_order_lookup_for_fills(store) if store is not None else {}
     fills = tuple(
         fill
         for fill in (
-            _fill_from_mt5_deal(deal, mt5_module, broker_to_canonical)
+            _fill_from_mt5_deal(deal, mt5_module, broker_to_canonical, order_lookup)
             for deal in _materialize_mt5_sequence(raw_deals)
         )
         if fill is not None
@@ -445,6 +752,84 @@ def _broker_symbol_from_intent(intent: OrderIntent) -> str | None:
     return str(raw).strip()
 
 
+def _metadata_with(intent: OrderIntent, key: str, value: Any) -> dict[str, Any]:
+    metadata = dict(intent.metadata)
+    metadata[key] = value
+    return metadata
+
+
+def _tick_time_utc(tick: Mapping[str, Any]) -> datetime | None:
+    raw = tick.get("time_msc") or tick.get("time") or tick.get("time_utc")
+    if raw is None:
+        return None
+    try:
+        return _datetime_from_any(raw)
+    except Exception:
+        return None
+
+
+def _read_market_book(mt5_module: Any, broker_symbol: str) -> tuple[dict[str, Any], ...]:
+    added = False
+    if hasattr(mt5_module, "market_book_add"):
+        try:
+            added = bool(mt5_module.market_book_add(broker_symbol))
+        except Exception:
+            added = False
+    try:
+        raw_book = mt5_module.market_book_get(broker_symbol)
+        return tuple(_object_to_mapping(level) for level in _materialize_mt5_sequence(raw_book))
+    finally:
+        if added and hasattr(mt5_module, "market_book_release"):
+            try:
+                mt5_module.market_book_release(broker_symbol)
+            except Exception:
+                pass
+
+
+def _book_level_matches_order(
+    level: Mapping[str, Any],
+    *,
+    side: str,
+    mt5_module: Any,
+    requested_price: float | None,
+    deviation_price: float | None,
+) -> bool:
+    level_type = _as_optional_int(level.get("type"))
+    price = _as_optional_float(level.get("price"))
+    if level_type is None or price is None or price <= 0:
+        return False
+    if side == OrderSide.BUY.value:
+        ask_types = {
+            _mt5_constant(mt5_module, "BOOK_TYPE_SELL", 1),
+            _mt5_constant(mt5_module, "BOOK_TYPE_SELL_MARKET", 3),
+        }
+        if level_type not in ask_types:
+            return False
+        return requested_price is None or deviation_price is None or price <= requested_price + deviation_price
+    bid_types = {
+        _mt5_constant(mt5_module, "BOOK_TYPE_BUY", 2),
+        _mt5_constant(mt5_module, "BOOK_TYPE_BUY_MARKET", 4),
+    }
+    if level_type not in bid_types:
+        return False
+    return requested_price is None or deviation_price is None or price >= requested_price - deviation_price
+
+
+def _book_level_volume(level: Mapping[str, Any]) -> float:
+    volume = _as_optional_float(level.get("volume_dbl"))
+    if volume is None:
+        volume = _as_optional_float(level.get("volume"))
+    return max(volume or 0.0, 0.0)
+
+
+def _round_volume_down(value: float, step: float | None) -> float:
+    if step is None or step <= 0 or not math.isfinite(value):
+        return max(float(value), 0.0)
+    rounded = math.floor((float(value) + EPSILON) / step) * step
+    decimals = max(0, int(round(-math.log10(step)))) if step < 1 else 0
+    return round(max(rounded, 0.0), decimals + 2)
+
+
 def _request_action(intent: OrderIntent, mt5_module: Any | None) -> int:
     if intent.order_type == OrderType.MARKET.value:
         return _mt5_constant(mt5_module, "TRADE_ACTION_DEAL", 1)
@@ -493,7 +878,7 @@ def _request_filling_type(time_in_force: TimeInForce | str, mt5_module: Any | No
 
 def _request_comment(intent: OrderIntent) -> str:
     comment = intent.comment or f"{intent.strategy_version}:{intent.client_order_id}"
-    return comment[:31]
+    return comment[:MT5_MAX_COMMENT_LENGTH]
 
 
 def _mt5_constant(mt5_module: Any | None, name: str, fallback: int) -> int:
@@ -516,12 +901,21 @@ def _order_check_passed(check_result: Any, mt5_module: Any) -> bool:
     return retcode in allowed
 
 
-def _execution_status_from_send(send_result: Any, mt5_module: Any) -> ExecutionStatus:
+def _execution_status_from_send(
+    send_result: Any,
+    mt5_module: Any,
+    *,
+    requested_volume: float | None = None,
+) -> ExecutionStatus:
     retcode = _retcode(send_result)
+    payload = _object_to_mapping(send_result)
+    filled_volume = _as_optional_float(payload.get("volume"))
     if retcode in {
         _mt5_constant(mt5_module, "TRADE_RETCODE_DONE", 10009),
         _mt5_constant(mt5_module, "TRADE_RETCODE_PLACED", 10008),
     }:
+        if requested_volume is not None and filled_volume is not None and filled_volume < requested_volume - EPSILON:
+            return ExecutionStatus.PARTIAL
         return ExecutionStatus.FILLED
     if retcode == _mt5_constant(mt5_module, "TRADE_RETCODE_DONE_PARTIAL", 10010):
         return ExecutionStatus.PARTIAL
@@ -561,6 +955,7 @@ def _fill_from_mt5_deal(
     raw_deal: Any,
     mt5_module: Any,
     broker_to_canonical: Mapping[str, str] | None,
+    order_lookup: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> Fill | None:
     data = _object_to_mapping(raw_deal)
     symbol = _canonical_symbol(data.get("symbol"), broker_to_canonical)
@@ -579,9 +974,21 @@ def _fill_from_mt5_deal(
     volume = _as_optional_float(data.get("volume"))
     if price is None or price <= 0 or volume is None or volume <= 0:
         return None
+    order_ticket = _as_optional_int(data.get("order"))
+    order_details = order_lookup.get(order_ticket) if order_lookup and order_ticket is not None else None
+    slippage_bps = _fill_slippage_bps(
+        requested_price=_as_optional_float(order_details.get("requested_price")) if order_details else None,
+        fill_price=price,
+        side=side,
+    )
+    if order_details:
+        data["matched_client_order_id"] = order_details.get("client_order_id")
+        data["matched_requested_price"] = order_details.get("requested_price")
+        data["matched_requested_volume"] = order_details.get("requested_volume")
+        data["computed_slippage_bps"] = slippage_bps
     return Fill(
         deal_ticket=_as_optional_int(data.get("ticket")),
-        order_ticket=_as_optional_int(data.get("order")),
+        order_ticket=order_ticket,
         position_id=_as_optional_int(data.get("position_id")),
         symbol=symbol,
         filled_at_utc=_datetime_from_any(data.get("time_msc") or data.get("time") or _utc_now()),
@@ -591,8 +998,44 @@ def _fill_from_mt5_deal(
         profit=_as_float(data.get("profit")),
         commission=_as_float(data.get("commission")),
         swap=_as_float(data.get("swap")),
+        slippage_bps=slippage_bps,
         raw=data,
     )
+
+
+def _load_order_lookup_for_fills(store: SQLiteStore | None) -> dict[int, dict[str, Any]]:
+    if store is None:
+        return {}
+    rows = store.fetch_all(
+        """
+        SELECT client_order_id, mt5_order_ticket, mt5_deal_ticket, side,
+               requested_price, requested_volume
+        FROM orders
+        WHERE mt5_order_ticket IS NOT NULL OR mt5_deal_ticket IS NOT NULL
+        """
+    )
+    lookup: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        data = dict(row)
+        order_ticket = _as_optional_int(data.get("mt5_order_ticket"))
+        if order_ticket is not None:
+            lookup[order_ticket] = data
+    return lookup
+
+
+def _fill_slippage_bps(
+    *,
+    requested_price: float | None,
+    fill_price: float,
+    side: FillSide,
+) -> float | None:
+    if requested_price is None or requested_price <= 0 or fill_price <= 0:
+        return None
+    if side == FillSide.BUY:
+        return (fill_price - requested_price) / requested_price * 10_000.0
+    if side == FillSide.SELL:
+        return (requested_price - fill_price) / requested_price * 10_000.0
+    return abs(fill_price - requested_price) / requested_price * 10_000.0
 
 
 def _canonical_symbol(
@@ -738,6 +1181,13 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Iterable) and not isinstance(value, str | bytes | bytearray):
         return [_json_safe(item) for item in value]
     return str(value)
+
+
+def _compact_json(value: Any) -> str:
+    try:
+        return json.dumps(_json_safe(value), sort_keys=True, separators=(",", ":"))
+    except TypeError:
+        return str(value)
 
 
 __all__ = [

@@ -21,7 +21,7 @@ from mt5_crypto_bot.execution import (
     read_positions,
 )
 from mt5_crypto_bot.risk import RiskApprovedOrder
-from mt5_crypto_bot.schemas import OrderIntent, OrderSide, RiskCheck
+from mt5_crypto_bot.schemas import ExecutionResult, ExecutionStatus, OrderIntent, OrderSide, RiskCheck
 from mt5_crypto_bot.storage import SQLiteStore
 
 
@@ -83,12 +83,17 @@ class FakeMT5:
     POSITION_TYPE_SELL = 1
     DEAL_TYPE_BUY = 0
     DEAL_TYPE_SELL = 1
+    BOOK_TYPE_SELL = 1
+    BOOK_TYPE_BUY = 2
+    BOOK_TYPE_SELL_MARKET = 3
+    BOOK_TYPE_BUY_MARKET = 4
     TRADE_RETCODE_DONE = 10009
     TRADE_RETCODE_PLACED = 10008
     TRADE_RETCODE_DONE_PARTIAL = 10010
 
-    def __init__(self) -> None:
+    def __init__(self, *, last_error: tuple[object, ...] = (-1, "order_check unavailable")) -> None:
         self.calls: list[str] = []
+        self._last_error = last_error
 
     def order_check(self, request: object) -> object:
         self.calls.append("order_check")
@@ -97,6 +102,10 @@ class FakeMT5:
     def order_send(self, request: object) -> object:
         self.calls.append("order_send")
         raise AssertionError("dry-run tests must not call order_send")
+
+    def last_error(self) -> tuple[object, ...]:
+        self.calls.append("last_error")
+        return self._last_error
 
     def positions_get(self) -> tuple[object, ...]:
         self.calls.append("positions_get")
@@ -158,9 +167,51 @@ class SimpleObject:
 
 
 class FakeLiveMT5(FakeMT5):
-    def __init__(self, *, check_retcode: int = FakeMT5.TRADE_RETCODE_DONE) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        *,
+        check_retcode: int = FakeMT5.TRADE_RETCODE_DONE,
+        bid: float = 100.4,
+        ask: float = 100.6,
+        book: tuple[object, ...] = (),
+        send_retcode: int = FakeMT5.TRADE_RETCODE_DONE,
+        send_volume: float | None = None,
+        send_price: float | None = None,
+        last_error: tuple[object, ...] = (-2, "order_check returned None"),
+    ) -> None:
+        super().__init__(last_error=last_error)
         self.check_retcode = check_retcode
+        self.bid = bid
+        self.ask = ask
+        self.book = book
+        self.send_retcode = send_retcode
+        self.send_volume = send_volume
+        self.send_price = send_price
+
+    def symbol_info_tick(self, symbol: str) -> object:
+        self.calls.append("symbol_info_tick")
+        return {
+            "symbol": symbol,
+            "bid": self.bid,
+            "ask": self.ask,
+            "time_msc": int(datetime.now(timezone.utc).timestamp() * 1000),
+        }
+
+    def symbol_info(self, symbol: str) -> object:
+        self.calls.append("symbol_info")
+        return {
+            "symbol": symbol,
+            "digits": 2,
+            "point": 0.01,
+            "trade_stops_level": 0,
+            "volume_min": 0.01,
+            "volume_max": 100.0,
+            "volume_step": 0.01,
+        }
+
+    def market_book_get(self, symbol: str) -> tuple[object, ...]:
+        self.calls.append("market_book_get")
+        return self.book
 
     def order_check(self, request: object) -> object:
         self.calls.append("order_check")
@@ -170,12 +221,13 @@ class FakeLiveMT5(FakeMT5):
     def order_send(self, request: object) -> object:
         self.calls.append("order_send")
         self.send_request = request
+        request_data = request if isinstance(request, dict) else {}
         return SimpleObject(
-            retcode=self.TRADE_RETCODE_DONE,
+            retcode=self.send_retcode,
             order=555,
             deal=777,
-            volume=1.25,
-            price=100.5,
+            volume=self.send_volume if self.send_volume is not None else float(request_data.get("volume", 1.25)),
+            price=self.send_price if self.send_price is not None else float(request_data.get("price", 100.5)),
             comment="send result",
         )
 
@@ -276,11 +328,43 @@ class ExecutionEngineTests(unittest.TestCase):
             else:
                 os.environ["LIVE_APPROVED"] = old_value
 
-        self.assertEqual(fake_mt5.calls, ["order_check"])
+        self.assertIn("order_check", fake_mt5.calls)
+        self.assertNotIn("order_send", fake_mt5.calls)
         self.assertEqual(result.trade_mode, "live")
         self.assertEqual(result.status, "rejected")
         self.assertTrue(result.result["order_check_called"])
         self.assertFalse(result.result["order_send_called"])
+
+    def test_live_order_check_none_records_last_error(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+
+                class NoneCheckMT5(FakeLiveMT5):
+                    def order_check(self, request: object) -> object:
+                        self.calls.append("order_check")
+                        return None
+
+                fake_mt5 = NoneCheckMT5(last_error=(-10004, "request rejected by terminal"))
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(approved_order(), mt5_module=fake_mt5)
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertIn("order_check", fake_mt5.calls)
+        self.assertIn("last_error", fake_mt5.calls)
+        self.assertNotIn("order_send", fake_mt5.calls)
+        self.assertEqual(result.status, "rejected")
+        self.assertEqual(result.result["last_error"]["code"], -10004)
+        self.assertEqual(result.result["last_error"]["message"], "request rejected by terminal")
 
     def test_live_order_check_then_order_send_records_live_result(self) -> None:
         old_value = os.environ.get("LIVE_APPROVED")
@@ -309,7 +393,8 @@ class ExecutionEngineTests(unittest.TestCase):
             else:
                 os.environ["LIVE_APPROVED"] = old_value
 
-        self.assertEqual(fake_mt5.calls, ["order_check", "order_send"])
+        self.assertIn("order_check", fake_mt5.calls)
+        self.assertIn("order_send", fake_mt5.calls)
         self.assertEqual(result.trade_mode, "live")
         self.assertEqual(result.status, "filled")
         self.assertEqual(result.mt5_order_ticket, 555)
@@ -320,11 +405,142 @@ class ExecutionEngineTests(unittest.TestCase):
         self.assertTrue(payload["result"]["order_check_called"])
         self.assertTrue(payload["result"]["order_send_called"])
 
+    def test_live_order_uses_fresh_tick_and_preserves_stop_offsets(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5(bid=100.9, ask=101.0)
+                with SQLiteStore(Path(tmpdir) / "trading.db") as store:
+                    result = ExecutionEngine(
+                        trade_mode="live",
+                        live_approval_file=approval_file,
+                    ).execute_approved_order(
+                        approved_order(),
+                        store=store,
+                        mt5_module=fake_mt5,
+                    )
+                    row = store.fetch_one(
+                        "SELECT requested_price, sl, tp, request_json, result_json FROM orders WHERE client_order_id = ?",
+                        ("order-1",),
+                    )
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(result.status, "filled")
+        self.assertEqual(fake_mt5.check_request["price"], 101.0)
+        self.assertEqual(fake_mt5.check_request["sl"], 98.5)
+        self.assertEqual(fake_mt5.check_request["tp"], 104.5)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["requested_price"], 101.0)
+        self.assertIn('"price":101.0', row["request_json"])
+        payload = json.loads(row["result_json"])
+        refresh = payload["result"]["live_precheck"]["live_refresh"]
+        self.assertEqual(refresh["original_requested_price"], 100.5)
+        self.assertEqual(refresh["live_requested_price"], 101.0)
+
+    def test_live_liquidity_caps_volume_before_order_check(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5(
+                    bid=100.4,
+                    ask=100.6,
+                    book=(
+                        {"type": FakeMT5.BOOK_TYPE_SELL, "price": 100.6, "volume_dbl": 0.50},
+                        {"type": FakeMT5.BOOK_TYPE_BUY, "price": 100.4, "volume_dbl": 2.00},
+                    ),
+                )
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(approved_order(), mt5_module=fake_mt5)
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(result.status, "filled")
+        self.assertEqual(fake_mt5.check_request["volume"], 0.4)
+        liquidity = result.result["live_precheck"]["liquidity"]
+        self.assertEqual(liquidity["visible_volume"], 0.5)
+        self.assertEqual(liquidity["requested_volume_after"], 0.4)
+
+    def test_live_liquidity_rejects_before_order_check_when_below_minimum(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5(
+                    book=(
+                        {"type": FakeMT5.BOOK_TYPE_SELL, "price": 100.6, "volume_dbl": 0.005},
+                    ),
+                )
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(approved_order(), mt5_module=fake_mt5)
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(result.status, "rejected")
+        self.assertFalse(result.result["order_check_called"])
+        self.assertFalse(result.result["order_send_called"])
+        self.assertNotIn("order_check", fake_mt5.calls)
+        self.assertNotIn("order_send", fake_mt5.calls)
+
+    def test_live_smaller_done_volume_is_recorded_as_partial(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5(send_volume=0.75)
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(approved_order(), mt5_module=fake_mt5)
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.filled_volume, 0.75)
+
     def test_reconciliation_helpers_are_read_only_and_store_snapshots(self) -> None:
         fake_mt5 = FakeMT5()
         mapping = {"BTCUSD": "BTC/USD"}
         with tempfile.TemporaryDirectory() as tmpdir:
             with SQLiteStore(Path(tmpdir) / "trading.db") as store:
+                store.upsert_execution_result(
+                    ExecutionResult(
+                        client_order_id="filled-order",
+                        executed_at_utc=NOW,
+                        status=ExecutionStatus.FILLED,
+                        symbol="BTC/USD",
+                        requested_volume=1.5,
+                        requested_price=99.0,
+                        mt5_order_ticket=301,
+                        mt5_deal_ticket=201,
+                    )
+                )
                 positions = read_positions(fake_mt5, broker_to_canonical=mapping, store=store)
                 fills = read_deals(fake_mt5, broker_to_canonical=mapping, store=store)
 
@@ -335,6 +551,7 @@ class ExecutionEngineTests(unittest.TestCase):
         self.assertEqual(positions[0].symbol, "BTC/USD")
         self.assertEqual(len(fills), 1)
         self.assertEqual(fills[0].symbol, "BTC/USD")
+        self.assertAlmostEqual(fills[0].slippage_bps or 0.0, 101.01010101010101)
         self.assertIn("positions_get", fake_mt5.calls)
         self.assertIn("history_deals_get", fake_mt5.calls)
         self.assertNotIn("order_check", fake_mt5.calls)

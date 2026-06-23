@@ -378,6 +378,35 @@ The analytics script reads local storage only. It never connects to MT5, never
 calls `order_check`, never calls `order_send`, and never changes the live or
 dry-run strategy automatically.
 
+Run the full continuous-improvement packet after a live or dry-run session:
+
+```powershell
+python scripts/run_continuous_improvement.py
+```
+
+For a fast during-run/advisory snapshot, skip the heavier backtest pass:
+
+```powershell
+python scripts/run_continuous_improvement.py --skip-backtest --run-id cycle_snapshot
+```
+
+The continuous-improvement loop combines analytics, threshold recommendation,
+champion/challenger evaluation, inactive strategy proposals, and a review-only
+candidate `.env` snippet under `reports/continuous_improvement/`. It does not
+modify `.env`, does not open MT5, and does not promote a candidate automatically.
+
+The guarded live runner can also trigger the loop:
+
+```powershell
+python scripts/run_bot_live.py --minutes 30 --poll-seconds 15 --improvement-after-run
+```
+
+During a longer run, use lightweight read-only snapshots every N cycles:
+
+```powershell
+python scripts/run_bot_live.py --minutes 120 --poll-seconds 15 --improvement-every-cycles 20
+```
+
 Reports are written under `reports/analytics/` and include:
 
 - return, max drawdown, and non-annualized 15-minute Sharpe;
@@ -431,7 +460,9 @@ src/mt5_crypto_bot/
   risk.py
   execution.py
   analytics.py
+  continuous_improvement.py
   retune.py
+  thresholds.py
   reporting.py
   logging_setup.py
 scripts/
@@ -441,7 +472,10 @@ scripts/
   export_feature_snapshots.py
   backtest.py
   run_analytics.py
+  run_continuous_improvement.py
+  recommend_thresholds.py
   run_strategy_once.py
+  run_bot_live.py
   run_bot_dry_run.py
   print_risk_state.py
 tests/
@@ -452,6 +486,8 @@ tests/
   test_risk.py
   test_execution.py
   test_analytics.py
+  test_continuous_improvement.py
+  test_thresholds.py
 ```
 
 ## Safety Notes

@@ -76,6 +76,17 @@ class ConfigValidationTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             BotConfig(max_symbol_leverage=9.0, max_gross_leverage=8.0)
 
+    def test_strategy_threshold_overrides_flow_into_strategy_params(self) -> None:
+        config = load_config(
+            env={"ENTRY_THRESHOLD": "0.75", "EXIT_THRESHOLD": "0.25"},
+            env_file=None,
+        )
+
+        params = config.strategy_params()
+
+        self.assertEqual(params.entry_threshold, 0.75)
+        self.assertEqual(params.exit_threshold, 0.25)
+
 
 class SchemaValidationTests(unittest.TestCase):
     def test_symbol_config_enforces_allow_list(self) -> None:

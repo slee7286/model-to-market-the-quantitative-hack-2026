@@ -691,6 +691,7 @@ class SQLiteStore:
               mt5_deal_ticket = excluded.mt5_deal_ticket,
               retcode = excluded.retcode,
               status = excluded.status,
+              request_json = excluded.request_json,
               result_json = excluded.result_json,
               updated_at_utc = excluded.updated_at_utc
             """,
