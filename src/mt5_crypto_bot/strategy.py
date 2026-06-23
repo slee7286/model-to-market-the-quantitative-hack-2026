@@ -57,19 +57,19 @@ SPREAD_CAP_BPS: dict[str, float] = {
 ABNORMAL_SPREAD_EXIT_MULTIPLE = 1.5
 
 NORMAL_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
-    "BAR/USD": 0.50,
-    "BTC/USD": 1.75,
-    "ETH/USD": 1.75,
-    "SOL/USD": 1.25,
-    "XRP/USD": 1.00,
+    "BAR/USD": 27.00,
+    "BTC/USD": 27.00,
+    "ETH/USD": 27.00,
+    "SOL/USD": 27.00,
+    "XRP/USD": 27.00,
 }
 
 HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
-    "BAR/USD": 0.75,
-    "BTC/USD": 2.00,
-    "ETH/USD": 2.00,
-    "SOL/USD": 1.50,
-    "XRP/USD": 1.25,
+    "BAR/USD": 27.00,
+    "BTC/USD": 27.00,
+    "ETH/USD": 27.00,
+    "SOL/USD": 27.00,
+    "XRP/USD": 27.00,
 }
 
 TARGET_RV_1H: dict[str, float] = {

@@ -532,9 +532,11 @@ def _refresh_intent_to_live_market(
         return round(value, digits) if digits is not None else value
 
     def _away(level: float, above: bool) -> float:
+        # The broker measures the stop gap from the worse side of the spread:
+        # levels above price are checked against ask, levels below against bid.
         if min_dist <= 0:
             return level
-        return max(level, new_price + min_dist) if above else min(level, new_price - min_dist)
+        return max(level, ask + min_dist) if above else min(level, bid - min_dist)
 
     update: dict[str, Any] = {"requested_price": _round(new_price)}
     refresh_payload = diagnostics["live_refresh"]

@@ -20,10 +20,10 @@ Competition-relevant risk limits from `rules.md`:
 
 | Rule Area | Rule Threshold | Bot Internal Guard |
 | --- | ---: | ---: |
-| Max leverage | 30x account max; penalties begin above 28x | Blocks projected gross leverage above 8x |
-| Margin usage | penalties begin above 90% | Blocks new risk above 60% projected margin usage |
-| Single-instrument exposure | penalty above 90% for 30 minutes | Blocks above 75% projected share |
-| Net directional exposure | penalty above 95% for 30 minutes | Blocks above 85% projected share |
+| Max leverage | 30x account max; penalties begin above 28x | Blocks projected gross leverage above 27x |
+| Margin usage | penalties begin above 90% | Blocks projected margin usage above 90% |
+| Single-instrument exposure | penalty above 90% for 30 minutes | Tracks time over threshold and blocks added exposure after the soft window |
+| Net directional exposure | penalty above 95% for 30 minutes | Tracks time over threshold and blocks added exposure after the soft window |
 | API abuse | safe harbor at or below 500 requests/second, still reviewable if abusive | Default dry-run cadence is 15 seconds |
 
 ## 2. What The Bot Does Now
@@ -244,11 +244,11 @@ Instrument treatment:
 
 | Symbol | Role | Starting Cap |
 | --- | --- | ---: |
-| `BTC/USD` | Regime anchor and core trend instrument | 2.00x hard symbol cap |
-| `ETH/USD` | Liquid high-beta core alt | 2.00x hard symbol cap |
-| `SOL/USD` | Higher-beta momentum sleeve | 1.50x hard symbol cap |
-| `XRP/USD` | Event-sensitive alt | 1.25x hard symbol cap |
-| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | 0.75x hard symbol cap |
+| `BTC/USD` | Regime anchor and core trend instrument | no low per-symbol clamp; 27x gross portfolio cap |
+| `ETH/USD` | Liquid high-beta core alt | no low per-symbol clamp; 27x gross portfolio cap |
+| `SOL/USD` | Higher-beta momentum sleeve | no low per-symbol clamp; 27x gross portfolio cap |
+| `XRP/USD` | Event-sensitive alt | no low per-symbol clamp; 27x gross portfolio cap |
+| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | no low per-symbol clamp; 27x gross portfolio cap |
 
 Activation gates block entries when required data is missing or stale:
 

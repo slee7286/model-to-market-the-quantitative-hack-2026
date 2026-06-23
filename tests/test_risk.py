@@ -83,6 +83,11 @@ def all_metadata() -> dict[str, SymbolConfig]:
     return {symbol: metadata(symbol) for symbol in ("BAR/USD", "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD")}
 
 
+def high_capacity_metadata(symbol: str = "BTC/USD") -> SymbolConfig:
+    config = metadata(symbol)
+    return config.model_copy(update={"volume_max": 1_000_000.0})
+
+
 def context(
     *,
     acct: AccountRiskState | None = None,
@@ -203,11 +208,36 @@ class RiskEngineTests(unittest.TestCase):
     def test_margin_usage_cap_blocks_trade(self) -> None:
         decision = RiskEngine().check_order_intent(
             intent(),
-            context(acct=account(margin=610_000.0)),
+            context(acct=account(margin=910_000.0)),
         )
 
         self.assertFalse(decision.passed)
         self.assertIn("margin usage", decision.risk_check.reason or "")
+
+    def test_aggressive_profile_allows_26x_but_blocks_above_27x_gross(self) -> None:
+        base_context = context()
+        live_metadata = dict(base_context.symbol_metadata)
+        live_metadata["BTC/USD"] = high_capacity_metadata("BTC/USD")
+        aggressive_context = RiskContext(
+            account=base_context.account,
+            symbol_metadata=live_metadata,
+            positions=base_context.positions,
+            market=base_context.market,
+            now_utc=base_context.now_utc,
+        )
+
+        allowed = RiskEngine().check_order_intent(
+            intent(volume=260_000.0, price=100.0),
+            aggressive_context,
+        )
+        blocked = RiskEngine().check_order_intent(
+            intent(volume=280_000.0, price=100.0),
+            aggressive_context,
+        )
+
+        self.assertTrue(allowed.passed, allowed.risk_check.reason)
+        self.assertFalse(blocked.passed)
+        self.assertIn("gross leverage", blocked.risk_check.reason or "")
 
     def test_single_instrument_concentration_blocks_after_soft_limit(self) -> None:
         # Lone dominant BTC position keeps single-instrument exposure > 90%; once

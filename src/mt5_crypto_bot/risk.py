@@ -37,6 +37,8 @@ from mt5_crypto_bot.storage import SQLiteStore
 
 EPSILON = 1e-9
 RULE_MAX_ACCOUNT_LEVERAGE = 30.0
+RULE_SAFE_GROSS_LEVERAGE_CAP = 27.0
+RULE_SAFE_MARGIN_USAGE_CAP = 0.90
 
 SPREAD_CAP_BPS: dict[str, float] = {
     "BAR/USD": 25.0,
@@ -47,11 +49,11 @@ SPREAD_CAP_BPS: dict[str, float] = {
 }
 
 HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
-    "BAR/USD": 0.75,
-    "BTC/USD": 2.00,
-    "ETH/USD": 2.00,
-    "SOL/USD": 1.50,
-    "XRP/USD": 1.25,
+    "BAR/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
+    "BTC/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
+    "ETH/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
+    "SOL/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
+    "XRP/USD": RULE_SAFE_GROSS_LEVERAGE_CAP,
 }
 
 
@@ -61,11 +63,11 @@ class RiskEngineError(RuntimeError):
 
 @dataclass(frozen=True)
 class RiskLimits:
-    """Internal caps, deliberately stricter than ``rules.md`` penalty zones."""
+    """Rules-aware live caps: aggressive, but below the 30x stop-out boundary."""
 
-    max_gross_leverage: float = 8.0
-    max_symbol_leverage: float = 2.0
-    max_margin_usage: float = 0.60
+    max_gross_leverage: float = RULE_SAFE_GROSS_LEVERAGE_CAP
+    max_symbol_leverage: float = RULE_SAFE_GROSS_LEVERAGE_CAP
+    max_margin_usage: float = RULE_SAFE_MARGIN_USAGE_CAP
     # Concentration / net-direction are no longer hard-rejected. They trigger the
     # rules.md penalty only when sustained > 30 min, so we allow a breach of the
     # rules thresholds for up to a soft time window, then stop adding exposure.
@@ -83,12 +85,17 @@ class RiskLimits:
 
     @classmethod
     def from_config(cls, config: BotConfig) -> RiskLimits:
-        """Build limits from config while never loosening the design freeze caps."""
+        """Build limits from config while never exceeding the rules-aware live cap."""
         total_stop = float(config.total_drawdown_stop)
+        gross_cap = min(float(config.max_gross_leverage), RULE_SAFE_GROSS_LEVERAGE_CAP)
         return cls(
-            max_gross_leverage=min(float(config.max_gross_leverage), 8.0),
-            max_symbol_leverage=min(float(config.max_symbol_leverage), 2.0),
-            max_margin_usage=min(float(config.max_margin_usage), 0.60),
+            max_gross_leverage=gross_cap,
+            max_symbol_leverage=min(
+                float(config.max_symbol_leverage),
+                gross_cap,
+                RULE_SAFE_GROSS_LEVERAGE_CAP,
+            ),
+            max_margin_usage=min(float(config.max_margin_usage), RULE_SAFE_MARGIN_USAGE_CAP),
             no_new_risk_drawdown=min(0.08, total_stop),
             hard_drawdown=min(0.10, total_stop),
         )
@@ -1213,6 +1220,8 @@ def _json_safe(value: Any) -> Any:
 
 __all__ = [
     "HARD_SYMBOL_LEVERAGE_CAP",
+    "RULE_SAFE_GROSS_LEVERAGE_CAP",
+    "RULE_SAFE_MARGIN_USAGE_CAP",
     "RULE_MAX_ACCOUNT_LEVERAGE",
     "SPREAD_CAP_BPS",
     "AccountRiskState",

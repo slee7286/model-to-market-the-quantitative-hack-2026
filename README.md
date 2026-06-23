@@ -280,9 +280,12 @@ state by default. It checks:
 - broker volume min/max/step;
 - local kill switch state.
 
-Internal caps are stricter than `rules.md` penalty zones: 8x gross leverage, 60%
-margin usage, 75% single-instrument exposure, 85% net directional exposure, and
-no-new-risk behavior from 8% drawdown.
+The current aggressive competition profile blocks projected gross leverage above
+`27x` and projected margin usage above `90%`. This sits below the 30x account
+maximum and below the rules' leverage penalty band that begins above 28x. The
+strategy no longer uses low per-symbol leverage clamps; concentration and net
+direction are still tracked against the `rules.md` time-based discipline bands,
+with no-new-risk behavior from 8% drawdown.
 
 Print current MT5 account and risk state with read-only MT5 calls:
 
@@ -445,14 +448,17 @@ parameters:
 - `atr_stop_multiple`: `1.2`, `1.6`, `2.0`
 - `take_profit_multiple`: `1.8`, `2.4`, `3.0`
 
-The proposal loop does not increase `risk_per_trade`, gross leverage, symbol
-leverage, margin usage, or drawdown limits. Proposed rows are stored in
-`strategy_versions` with `active=0`, no approver, and no approval timestamp.
+The proposal loop does not automatically increase `risk_per_trade`, gross
+leverage, symbol leverage, margin usage, or drawdown limits. Proposed rows are
+stored in `strategy_versions` with `active=0`, no approver, and no approval
+timestamp.
 
 Current empirical live baseline after the 2026-06-23 overnight review is
 `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.50`. The update raises the entry
 bar from the high-churn `1.0 / 0.05` setting and exits faster when momentum
-weakens. It does not loosen risk caps or live approval gates.
+weakens. A later leaderboard-driven update raised the live sizing envelope to a
+27x gross-leverage cap with a 90% margin-usage cap. Live approval gates remain
+unchanged.
 
 Manual approval workflow:
 

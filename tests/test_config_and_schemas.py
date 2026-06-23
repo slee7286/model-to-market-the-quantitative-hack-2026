@@ -39,6 +39,9 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(config.target_symbols, ALLOWED_SYMBOLS)
         self.assertEqual(config.entry_threshold, 1.25)
         self.assertEqual(config.exit_threshold, 0.50)
+        self.assertEqual(config.max_gross_leverage, 27.0)
+        self.assertEqual(config.max_symbol_leverage, 27.0)
+        self.assertEqual(config.max_margin_usage, 0.90)
         self.assertIsNone(config.mt5_login)
         self.assertIsNone(config.mt5_password)
 
@@ -76,7 +79,7 @@ class ConfigValidationTests(unittest.TestCase):
 
     def test_risk_caps_are_validated(self) -> None:
         with self.assertRaises(ValidationError):
-            BotConfig(max_symbol_leverage=9.0, max_gross_leverage=8.0)
+            BotConfig(max_symbol_leverage=28.0, max_gross_leverage=27.0)
 
     def test_strategy_threshold_overrides_flow_into_strategy_params(self) -> None:
         config = load_config(
@@ -102,6 +105,9 @@ class SchemaValidationTests(unittest.TestCase):
         self.assertEqual(params.strategy_version, "momo_v1")
         self.assertEqual(params.entry_threshold, 1.25)
         self.assertEqual(params.exit_threshold, 0.50)
+        self.assertEqual(params.max_gross_leverage, 27.0)
+        self.assertEqual(params.max_symbol_leverage, 27.0)
+        self.assertEqual(params.max_margin_usage, 0.90)
 
         with self.assertRaises(ValidationError):
             StrategyParams(entry_threshold=0.25, exit_threshold=0.35)

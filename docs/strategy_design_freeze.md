@@ -6,7 +6,7 @@ This document freezes the first code-ready strategy specification for the MT5 cr
 
 Current status update: the strategy described here has since been implemented through dry-run execution and offline analytics, and a separate guarded live runner now exists. The freeze itself remains the source for `momo_v1` strategy/risk intent. Any live session must still use `scripts/run_bot_live.py` with `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json`; unattended automation must not create those gates or place live orders.
 
-Empirical update on 2026-06-23: overnight live data and stored signal replay moved the active `momo_v1` thresholds to `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.50`. The lower `1.0 / 0.05` setting generated excessive churn, while the local replay over 723 stored signal rows favored fewer entries and faster exits. This is a conservative parameter update only; symbol allow-list, risk caps, live approval gates, and manual-review requirements remain unchanged.
+Empirical update on 2026-06-23: overnight live data and stored signal replay moved the active `momo_v1` thresholds to `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.50`. The lower `1.0 / 0.05` setting generated excessive churn, while the local replay over 723 stored signal rows favored fewer entries and faster exits. A later leaderboard review showed that top-ranked accounts were winning with fewer, much larger exposures, so the live sizing envelope was raised to a 27x gross-leverage cap and 90% margin-usage cap while retaining the crypto-only symbol allow-list, explicit live approval, freshness checks, spread checks, `order_check`, kill switch, and drawdown guards.
 
 The strategy is constrained to the allowed crypto instruments only:
 
@@ -66,20 +66,20 @@ This matches `docs/strategy_research.md` and the blueprint direction. Because no
 
 | Area | Freeze Decision | Reason |
 | --- | --- | --- |
-| BAR/HBAR risk cap | Hard cap `0.75x` symbol leverage, normal cap `0.50x`, and block until spread data is acceptable. | Research has limited direct HBAR support and no local metadata is present. This is stricter than the blueprint and rules-compliant. |
+| BAR/HBAR risk cap | Low per-symbol leverage caps removed for the aggressive competition profile; entries still require acceptable spread, metadata, and freshness. | Leaderboard evidence favors larger exposures. `rules.md` permits leverage up to 30x, so the current guard is portfolio gross leverage <= 27x. |
 | Signal formula weights | Use the research document's balanced M15/H1, EMA, Donchian, slope, and volume weights. | Prompt 01 refined the blueprint formula using external research. |
-| Gross leverage stretch | MVP hard cap remains `8.0x`; no 10x-12x stretch is enabled by this freeze. | No collected data or dry-run evidence exists to justify higher leverage. |
+| Gross leverage stretch | Aggressive live cap is `27.0x` gross exposure. | Return rank carries 70% of the score; leaderboard leaders are using large exposures. This stays below the 28x penalty band and 30x account maximum. |
 | Order-book imbalance | Shadow-only optional filter until stable `market_book_get()` data exists. | Depth availability is unverified. This avoids fragile or high-frequency behavior. |
 
 ## Instrument Roles
 
 | Symbol | Role | Trading Bias | Starting Treatment |
 | --- | --- | --- | --- |
-| `BTC/USD` | Regime anchor and core instrument | Trade own trend both long and short. Use as market state for all alts. | Highest liquidity assumption, max symbol leverage `2.0x`, spread cap `8 bps`. |
-| `ETH/USD` | Liquid high-beta core alt | Trade momentum when own signal confirms or relative strength is strong. | Max symbol leverage `2.0x`; reduce stacking with BTC when net directional exposure is high. |
-| `SOL/USD` | Higher-beta momentum sleeve | Trade only with no strong opposing BTC regime. | Normal cap `1.25x`, hard cap `1.50x`, spread cap `15 bps`. |
-| `XRP/USD` | Event-sensitive alt | Trade momentum only with tighter jump and regime filters. | Normal cap `1.00x`, hard cap `1.25x`, spread cap `15 bps`; no exposure increase after shock bars. |
-| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | Trade only if mapping, metadata, spread, and volume are acceptable. | Normal cap `0.50x`, hard cap `0.75x`, spread cap `25 bps`; block if depth/spread is unstable. |
+| `BTC/USD` | Regime anchor and core instrument | Trade own trend both long and short. Use as market state for all alts. | Highest liquidity assumption, no low per-symbol clamp, spread cap `8 bps`. |
+| `ETH/USD` | Liquid high-beta core alt | Trade momentum when own signal confirms or relative strength is strong. | No low per-symbol clamp; reduce stacking only through gross leverage, margin, freshness, spread, and drawdown gates. |
+| `SOL/USD` | Higher-beta momentum sleeve | Trade only with no strong opposing BTC regime. | No low per-symbol clamp, spread cap `15 bps`, shock filter. |
+| `XRP/USD` | Event-sensitive alt | Trade momentum only with tighter jump and regime filters. | No low per-symbol clamp, spread cap `15 bps`; no exposure increase after shock bars. |
+| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | Trade only if mapping, metadata, spread, and volume are acceptable. | No low per-symbol clamp, spread cap `25 bps`; block if depth/spread is unstable. |
 
 ## Timeframes And Cadence
 
@@ -355,14 +355,14 @@ Starting volatility targets:
 
 ## Risk Caps
 
-These caps are intentionally below `rules.md` penalty zones: margin penalties start above 90%, leverage penalties above 28x, single-instrument concentration above 90%, and net directional exposure above 95%.
+These caps are now leaderboard-aggressive but remain bounded by `rules.md`: margin penalties start above 90%, leverage penalties above 28x, single-instrument concentration above 90%, and net directional exposure above 95%.
 
 | Risk Control | Starting Limit | Hard Behavior | Rationale |
 | --- | --- | --- | --- |
-| Gross leverage target | `5.0x` | Block projected exposure above `8.0x` | Far below 28x penalty zone. |
-| Margin usage warning | `50%` | No new risk if projected margin usage exceeds `60%` | Far below 90% penalty zone. |
-| Single-instrument share target | `65%` | Block projected share above `75%` | Below 90% penalty zone. |
-| Net directional exposure target | `75%` | Block projected share above `85%` | Below 95% penalty zone. |
+| Gross leverage target | Signal-scaled up to `27.0x` | Block projected exposure above `27.0x` | Below 28x leverage penalty zone and 30x account maximum. |
+| Margin usage warning | Monitor continuously | No new risk if projected margin usage exceeds `90%` | Avoids the `>90%` penalty threshold while using available margin. |
+| Single-instrument share target | Opportunistic | Track time above `90%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
+| Net directional exposure target | Opportunistic | Track time above `95%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
 | Max open positions | 5 | One position per allowed symbol | Prevents duplicated exposure. |
 | Normal drawdown guard | `5%` total drawdown | Defensive sizing | Preserves capital. |
 | No-new-risk drawdown | `8%` total drawdown | Entry risk fraction becomes zero | Avoids drawdown spiral. |
@@ -374,11 +374,11 @@ Symbol leverage caps:
 
 | Symbol | Normal Cap | Hard Cap | Rationale |
 | --- | --- | --- | --- |
-| `BTC/USD` | `1.75x` | `2.00x` | Anchor and likely best liquidity. |
-| `ETH/USD` | `1.75x` | `2.00x` | Core alt, correlated with BTC. |
-| `SOL/USD` | `1.25x` | `1.50x` | Higher beta. |
-| `XRP/USD` | `1.00x` | `1.25x` | Jump/event risk. |
-| `BAR/USD` | `0.50x` | `0.75x` | HBAR metadata and liquidity unknown. |
+| `BTC/USD` | `27.00x` | `27.00x` | Anchor and likely best liquidity. |
+| `ETH/USD` | `27.00x` | `27.00x` | Core alt, correlated with BTC. |
+| `SOL/USD` | `27.00x` | `27.00x` | Higher beta, still filtered by spread/shock gates. |
+| `XRP/USD` | `27.00x` | `27.00x` | Jump/event risk, still filtered by shock gate. |
+| `BAR/USD` | `27.00x` | `27.00x` | Allowed but must pass metadata, spread, and freshness gates. |
 
 ## Candidate Strategies For Shadow Mode Only
 

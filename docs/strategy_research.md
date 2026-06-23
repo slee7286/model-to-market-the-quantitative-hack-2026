@@ -54,11 +54,11 @@ The blueprint's strategy direction, volatility-managed crypto momentum with stri
 
 | Instrument | Research Read | Practical Role | Starting Risk Treatment |
 | --- | --- | --- | --- |
-| `BTC/USD` | BTC is the best-studied crypto asset and a natural proxy for the crypto market factor. Intraday research is strongest for BTC. | Market regime anchor and core traded instrument. BTC trend should gate alt risk-on/risk-off exposure. | Highest liquidity assumption, but still cap symbol leverage around 2.0x and require spread <= 8 bps until broker data proves otherwise. |
-| `ETH/USD` | ETH is included in intraday and EMA-momentum evidence and usually carries high crypto beta. | Liquid alt/core momentum asset. Trade ETH when its own momentum confirms BTC regime or when relative strength vs BTC is strong. | Cap symbol leverage around 2.0x; reduce exposure when ETH and BTC signals are redundant and net directional exposure is already high. |
-| `SOL/USD` | Contemporary EMA research includes Solana. SOL is typically higher beta and can trend sharply. | High-beta momentum sleeve for broad risk-on conditions. | Cap lower than BTC/ETH, around 1.25x to 1.5x; require BTC regime confirmation, wider ATR stops, and stricter drawdown response. |
-| `XRP/USD` | Ripple/XRP appears in intraday and EMA evidence, but it is event-sensitive and can jump on regulatory or headline risk. | Opportunistic momentum sleeve with strong risk controls. | Cap around 1.0x to 1.25x; require spread and jump filters, and avoid increasing exposure after extreme one-bar moves. |
-| `BAR/USD` | Local notes define BAR as HBAR/Hedera. The reviewed academic evidence does not directly validate HBAR. | Small, optional idiosyncratic alt sleeve only if MT5 metadata confirms reasonable spread, volume step, and depth. | Cap around 0.5x to 0.75x initially; block trading if spread is wide, depth is missing, or mapping is ambiguous. |
+| `BTC/USD` | BTC is the best-studied crypto asset and a natural proxy for the crypto market factor. Intraday research is strongest for BTC. | Market regime anchor and core traded instrument. BTC trend should gate alt risk-on/risk-off exposure. | Leaderboard-driven aggressive profile removes the old low symbol cap; require spread <= 8 bps and cap portfolio gross leverage at 27x. |
+| `ETH/USD` | ETH is included in intraday and EMA-momentum evidence and usually carries high crypto beta. | Liquid alt/core momentum asset. Trade ETH when its own momentum confirms BTC regime or when relative strength vs BTC is strong. | No low symbol cap; use gross leverage, margin, spread, freshness, and drawdown gates to control BTC/ETH stacking. |
+| `SOL/USD` | Contemporary EMA research includes Solana. SOL is typically higher beta and can trend sharply. | High-beta momentum sleeve for broad risk-on conditions. | No low symbol cap; require BTC regime confirmation, wider ATR stops, spread <= 15 bps, and strict drawdown response. |
+| `XRP/USD` | Ripple/XRP appears in intraday and EMA evidence, but it is event-sensitive and can jump on regulatory or headline risk. | Opportunistic momentum sleeve with strong risk controls. | No low symbol cap; require spread and jump filters, and avoid increasing exposure after extreme one-bar moves. |
+| `BAR/USD` | Local notes define BAR as HBAR/Hedera. The reviewed academic evidence does not directly validate HBAR. | Optional idiosyncratic alt sleeve only if MT5 metadata confirms reasonable spread, volume step, and depth. | No low symbol cap; block trading if spread is wide, depth is missing, or mapping is ambiguous. |
 
 ## Candidate Strategy Comparison
 
@@ -301,13 +301,13 @@ This plan is read-only or dry-run. It must not place orders.
 
 | Risk | Rule Impact | Mitigation |
 | --- | --- | --- |
-| Forced liquidation | Immediate elimination. | Keep internal gross leverage cap <= 8x normal mode, margin usage <= 60%, and stop new risk above drawdown guards. |
-| Margin usage above 90%/95%/98% | Risk discipline penalties and compliance review. | Internal cap 60%; warn above 50%; block new trades and reduce risk if breached. |
-| Leverage above 28x/29x/near 30x | Risk discipline penalties and compliance review. | Internal cap 8x normal mode; no automated increase; any higher finals stretch requires human approval. |
-| Single-instrument concentration above 90% | Risk discipline penalty. | Internal cap 75% of gross exposure, with lower symbol leverage caps for SOL/XRP/BAR. |
-| Net directional exposure above 95% | Risk discipline penalty. | Internal cap 85%; reduce correlated BTC/ETH/SOL same-direction stacking. |
-| Momentum crash or idiosyncratic jump | Drawdown, Sharpe, and survival risk. | Volatility scaling, ATR stops, shock filters, time stops, drawdown guard, symbol caps. |
-| Wide spreads and poor liquidity | Return drag and false signal profitability. | Spread bps filters, tick freshness checks, optional order-book confirmation, conservative sizing. |
+| Forced liquidation | Immediate elimination. | Keep projected gross leverage <= 27x, block projected margin usage above 90%, and stop new risk above drawdown guards. |
+| Margin usage above 90%/95%/98% | Risk discipline penalties and compliance review. | Internal cap 90%; block new trades and reduce risk if actual or projected margin breaches the cap. |
+| Leverage above 28x/29x/near 30x | Risk discipline penalties and compliance review. | Internal cap 27x; no order may project gross leverage above that cap. |
+| Single-instrument concentration above 90% | Risk discipline penalty. | Track breach duration and stop adding exposure after the soft window rather than pre-blocking all high-conviction trades. |
+| Net directional exposure above 95% | Risk discipline penalty. | Track breach duration and stop adding exposure after the soft window. |
+| Momentum crash or idiosyncratic jump | Drawdown, Sharpe, and survival risk. | Volatility scaling, ATR stops, shock filters, time stops, drawdown guard, and kill switch. |
+| Wide spreads and poor liquidity | Return drag and false signal profitability. | Spread bps filters, tick freshness checks, optional order-book confirmation, and `order_check` before `order_send`. |
 | API abuse or anomalous request patterns | Red-line disqualification risk. | M5 signal cadence, conservative tick polling, no high-frequency loops, request count logging. |
 | Ambiguous broker symbol mapping | Trading unsupported or wrong instrument. | Canonical allow-list plus explicit broker mapping; ambiguous mappings require manual confirmation. |
 | MT5 disconnect | Positions remain open without client-side auto-flatten. | Reconnect and reconcile before new trades; stop new risk while state is unknown. |

@@ -193,16 +193,31 @@ def _print_execution_diagnostics(execution: ExecutionResult) -> None:
 def _print_order_outcomes(result: LiveCycleResult, cycle_number: int) -> None:
     """Print every order attempt this cycle: risk verdict and placement result."""
     decisions = result.risk_result.decisions
+    suppressed = getattr(result, "suppressed_order_intents", ())
     exec_by_id = {res.client_order_id: res for res in result.execution_result.results}
     finished = result.finished_at_utc.isoformat()
     print(
         f"\n=== cycle {cycle_number} @ {finished}: "
         f"{len(decisions)} order attempt(s), "
+        f"{len(suppressed)} suppressed duplicate(s), "
         f"{len(result.risk_result.approved_orders)} risk-approved, "
         f"{result.execution_result.summary()['sent_to_mt5']} sent to MT5 ===",
         flush=True,
     )
-    if not decisions:
+    for item in suppressed:
+        intent = item.order_intent
+        print(
+            f"  SUPPRESS {intent.symbol} {_enum_value(intent.side)} "
+            f"vol={intent.requested_volume:g} @ {intent.requested_price}",
+            flush=True,
+        )
+        print(
+            "      RETRY  : skipped exact duplicate failed intent "
+            f"until {item.suppressed_until_utc.isoformat()}",
+            flush=True,
+        )
+        print(f"      REASON : previous failure -> {item.reason}", flush=True)
+    if not decisions and not suppressed:
         print("  NO ORDER ATTEMPTS THIS CYCLE", flush=True)
         return
     for decision in decisions:

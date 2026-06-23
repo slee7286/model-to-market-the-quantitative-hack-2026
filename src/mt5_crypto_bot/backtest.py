@@ -56,19 +56,19 @@ SLIPPAGE_BPS: dict[str, float] = {
 }
 
 NORMAL_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
-    "BAR/USD": 0.50,
-    "BTC/USD": 1.75,
-    "ETH/USD": 1.75,
-    "SOL/USD": 1.25,
-    "XRP/USD": 1.00,
+    "BAR/USD": 27.00,
+    "BTC/USD": 27.00,
+    "ETH/USD": 27.00,
+    "SOL/USD": 27.00,
+    "XRP/USD": 27.00,
 }
 
 HARD_SYMBOL_LEVERAGE_CAP: dict[str, float] = {
-    "BAR/USD": 0.75,
-    "BTC/USD": 2.00,
-    "ETH/USD": 2.00,
-    "SOL/USD": 1.50,
-    "XRP/USD": 1.25,
+    "BAR/USD": 27.00,
+    "BTC/USD": 27.00,
+    "ETH/USD": 27.00,
+    "SOL/USD": 27.00,
+    "XRP/USD": 27.00,
 }
 
 TARGET_RV_1H: dict[str, float] = {
@@ -99,9 +99,9 @@ class BacktestConfig:
     initial_equity: float = INITIAL_EQUITY
     entry_threshold: float = 1.25
     exit_threshold: float = 0.50
-    max_gross_leverage: float = 8.0
-    target_gross_leverage: float = 5.0
-    max_margin_usage: float = 0.60
+    max_gross_leverage: float = 27.0
+    target_gross_leverage: float = 24.0
+    max_margin_usage: float = 0.90
     sharpe_rule_min_observations: int = 8
     feature_config: FeatureConfig = FeatureConfig()
 
@@ -432,6 +432,7 @@ def _run_single_strategy(
     ]
     ledger = pd.concat(ledgers, ignore_index=True)
     ledger = ledger.sort_values(["feature_time_utc", "symbol"]).reset_index(drop=True)
+    ledger = _apply_portfolio_gross_cap(ledger, config.max_gross_leverage)
     ledger["net_return"] = ledger["gross_return"] - ledger["cost_return"]
 
     timeline = (
@@ -538,6 +539,58 @@ def _build_symbol_ledger(
             "pnl_side",
         ]
     ]
+
+
+def _apply_portfolio_gross_cap(ledger: pd.DataFrame, max_gross_leverage: float) -> pd.DataFrame:
+    """Scale simultaneous target vectors so gross exposure never exceeds the cap."""
+
+    capped = ledger.copy()
+    target_gross = capped.groupby("feature_time_utc")["target_leverage"].transform(
+        lambda series: float(series.abs().sum())
+    )
+    scale = np.where(
+        target_gross > max_gross_leverage,
+        max_gross_leverage / target_gross.replace(0.0, np.nan),
+        1.0,
+    )
+    scale = pd.Series(scale, index=capped.index).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+    scaled = scale < 1.0 - EPSILON
+    capped["target_leverage"] = capped["target_leverage"] * scale
+    capped.loc[scaled, "target_reason"] = (
+        capped.loc[scaled, "target_reason"].astype(str) + "; portfolio gross cap scaled"
+    )
+    return _recompute_ledger_from_targets(capped)
+
+
+def _recompute_ledger_from_targets(ledger: pd.DataFrame) -> pd.DataFrame:
+    """Recompute next-open positions, turnover, returns, and costs after target scaling."""
+
+    group = ledger.sort_values(["symbol", "feature_time_utc"]).reset_index(drop=True).copy()
+    group["position_leverage"] = group.groupby("symbol")["target_leverage"].shift(1).fillna(0.0)
+    group["previous_position_leverage"] = (
+        group.groupby("symbol")["position_leverage"].shift(1).fillna(0.0)
+    )
+    group["turnover"] = (
+        group["position_leverage"] - group["previous_position_leverage"]
+    ).abs()
+    group["abs_position_leverage"] = group["position_leverage"].abs()
+    group["gross_return"] = group["position_leverage"] * group["open_return_next"].fillna(0.0)
+    group["cost_return"] = (
+        group["turnover"]
+        * (group["effective_spread_bps"] / 2.0 + group["slippage_bps"])
+        / 10_000.0
+    )
+    group["pnl_side"] = np.select(
+        [
+            group["position_leverage"] > 0,
+            group["position_leverage"] < 0,
+            (group["position_leverage"] == 0) & (group["previous_position_leverage"] > 0),
+            (group["position_leverage"] == 0) & (group["previous_position_leverage"] < 0),
+        ],
+        ["long", "short", "long", "short"],
+        default="flat",
+    )
+    return group.sort_values(["feature_time_utc", "symbol"]).reset_index(drop=True)
 
 
 def _stateful_targets(

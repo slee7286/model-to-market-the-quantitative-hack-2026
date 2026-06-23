@@ -41,7 +41,7 @@ from mt5_crypto_bot.mt5_client import (
     shutdown_mt5,
 )
 from mt5_crypto_bot.risk import RiskBatchResult, RiskEngine, RiskLimits, load_risk_context_from_store
-from mt5_crypto_bot.schemas import normalize_symbols
+from mt5_crypto_bot.schemas import ExecutionStatus, OrderIntent, normalize_symbols
 from mt5_crypto_bot.storage import SQLiteStore
 from mt5_crypto_bot.strategy import (
     DryRunStrategyEngine,
@@ -53,11 +53,161 @@ from mt5_crypto_bot.symbols import DEFAULT_SYMBOL_MAP_PATH
 
 
 DEFAULT_LIVE_POLL_SECONDS = 15.0
+DEFAULT_FAILED_ORDER_SUPPRESSION_SECONDS = 10 * 60.0
 LOGGER = logging.getLogger(__name__)
 
 
 class LiveRunError(RuntimeError):
     """Raised when the guarded live runner cannot proceed safely."""
+
+
+@dataclass(frozen=True)
+class SuppressedOrderIntent:
+    """An unchanged failed intent skipped before another risk/execution attempt."""
+
+    order_intent: OrderIntent
+    reason: str
+    attempts: int
+    first_failed_at_utc: datetime
+    last_failed_at_utc: datetime
+    suppressed_until_utc: datetime
+
+
+@dataclass
+class _RetryState:
+    reason: str
+    attempts: int
+    first_failed_at_utc: datetime
+    last_failed_at_utc: datetime
+    suppressed_until_utc: datetime
+
+
+class OrderRetryGuard:
+    """Suppress exact duplicate order intents after deterministic failures."""
+
+    def __init__(
+        self,
+        *,
+        cooldown_seconds: float = DEFAULT_FAILED_ORDER_SUPPRESSION_SECONDS,
+        max_entries: int = 256,
+    ) -> None:
+        if cooldown_seconds <= 0:
+            raise ValueError("cooldown_seconds must be positive")
+        self.cooldown_seconds = float(cooldown_seconds)
+        self.max_entries = max(1, int(max_entries))
+        self._failures: dict[str, _RetryState] = {}
+
+    def filter_order_intents(
+        self,
+        order_intents: Sequence[OrderIntent],
+        *,
+        now_utc: datetime,
+    ) -> tuple[tuple[OrderIntent, ...], tuple[SuppressedOrderIntent, ...]]:
+        """Return intents that should be retried and exact duplicates to skip."""
+
+        now = _to_utc(now_utc)
+        self._prune(now)
+        allowed: list[OrderIntent] = []
+        suppressed: list[SuppressedOrderIntent] = []
+        for intent in order_intents:
+            state = self._failures.get(_intent_fingerprint(intent))
+            if state is None or state.suppressed_until_utc <= now:
+                allowed.append(intent)
+                continue
+            suppressed.append(
+                SuppressedOrderIntent(
+                    order_intent=intent,
+                    reason=state.reason,
+                    attempts=state.attempts,
+                    first_failed_at_utc=state.first_failed_at_utc,
+                    last_failed_at_utc=state.last_failed_at_utc,
+                    suppressed_until_utc=state.suppressed_until_utc,
+                )
+            )
+        return tuple(allowed), tuple(suppressed)
+
+    def observe_risk_result(self, risk_result: RiskBatchResult, *, now_utc: datetime) -> None:
+        """Record blocked risk checks so unchanged intents are not retried immediately."""
+
+        now = _to_utc(now_utc)
+        for decision in risk_result.decisions:
+            intent = decision.order_intent
+            if intent is None:
+                continue
+            if decision.passed:
+                self.clear_intent(intent)
+                continue
+            self.record_failure(intent, decision.risk_check.reason or "risk check blocked", now_utc=now)
+
+    def observe_execution_result(
+        self,
+        risk_result: RiskBatchResult,
+        execution_result: ExecutionBatchResult,
+        *,
+        now_utc: datetime,
+    ) -> None:
+        """Record live precheck/check/send failures and clear successful attempts."""
+
+        now = _to_utc(now_utc)
+        intents_by_id = {
+            approved.order_intent.client_order_id: approved.order_intent
+            for approved in risk_result.approved_orders
+        }
+        for result in execution_result.results:
+            intent = intents_by_id.get(result.client_order_id)
+            if intent is None:
+                continue
+            status = str(getattr(result.status, "value", result.status))
+            if status in {
+                ExecutionStatus.FILLED.value,
+                ExecutionStatus.PARTIAL.value,
+                ExecutionStatus.DRY_RUN.value,
+            }:
+                self.clear_intent(intent)
+                continue
+            self.record_failure(
+                intent,
+                result.message or f"execution status {status}",
+                now_utc=now,
+            )
+
+    def record_failure(self, intent: OrderIntent, reason: str, *, now_utc: datetime) -> None:
+        """Record one failed attempt for an exact order-intent fingerprint."""
+
+        now = _to_utc(now_utc)
+        key = _intent_fingerprint(intent)
+        existing = self._failures.get(key)
+        first_failed = existing.first_failed_at_utc if existing else now
+        attempts = (existing.attempts + 1) if existing else 1
+        self._failures[key] = _RetryState(
+            reason=reason,
+            attempts=attempts,
+            first_failed_at_utc=first_failed,
+            last_failed_at_utc=now,
+            suppressed_until_utc=datetime.fromtimestamp(
+                now.timestamp() + self.cooldown_seconds,
+                tz=timezone.utc,
+            ),
+        )
+        self._prune(now)
+
+    def clear_intent(self, intent: OrderIntent) -> None:
+        self._failures.pop(_intent_fingerprint(intent), None)
+
+    def _prune(self, now: datetime) -> None:
+        expired = [
+            key
+            for key, state in self._failures.items()
+            if state.suppressed_until_utc <= now
+        ]
+        for key in expired:
+            self._failures.pop(key, None)
+        while len(self._failures) > self.max_entries:
+            oldest_key = min(
+                self._failures,
+                key=lambda item: self._failures[item].last_failed_at_utc,
+            )
+            self._failures.pop(oldest_key, None)
 
 
 @dataclass(frozen=True)
@@ -71,6 +221,7 @@ class LiveCycleResult:
     strategy_result: StrategyCycleResult
     risk_result: RiskBatchResult
     execution_result: ExecutionBatchResult
+    suppressed_order_intents: tuple[SuppressedOrderIntent, ...]
     table_counts: Mapping[str, int]
 
     def summary(self) -> dict[str, Any]:
@@ -83,6 +234,21 @@ class LiveCycleResult:
             "strategy": self.strategy_result.summary(),
             "risk": self.risk_result.summary(),
             "execution": self.execution_result.summary(),
+            "suppressed_order_intents": [
+                {
+                    "client_order_id": item.order_intent.client_order_id,
+                    "symbol": item.order_intent.symbol,
+                    "side": str(getattr(item.order_intent.side, "value", item.order_intent.side)),
+                    "requested_volume": item.order_intent.requested_volume,
+                    "requested_price": item.order_intent.requested_price,
+                    "reason": item.reason,
+                    "attempts": item.attempts,
+                    "first_failed_at_utc": item.first_failed_at_utc.isoformat(),
+                    "last_failed_at_utc": item.last_failed_at_utc.isoformat(),
+                    "suppressed_until_utc": item.suppressed_until_utc.isoformat(),
+                }
+                for item in self.suppressed_order_intents
+            ],
             "table_counts": dict(self.table_counts),
         }
 
@@ -100,6 +266,7 @@ def run_live_cycle(
     minutes_limit: float | None = None,
     mt5_module: Any | None = None,
     manage_connection: bool = True,
+    order_retry_guard: OrderRetryGuard | None = None,
 ) -> LiveCycleResult:
     """Run one guarded live collection, signal, risk, and execution cycle.
 
@@ -129,13 +296,14 @@ def run_live_cycle(
     )
 
     try:
-        strategy_result, risk_result = _run_strategy_and_risk_once(
+        strategy_result, risk_result, suppressed_order_intents = _run_strategy_and_risk_once(
             db_url,
             config=config,
             target_symbols=symbols,
             feature_config=feature_config,
             now_utc=started_at,
             kill_switch_file=kill_switch_file,
+            order_retry_guard=order_retry_guard,
         )
     except (FeatureEngineeringError, StrategyEngineError) as exc:
         raise LiveRunError(str(exc)) from exc
@@ -150,16 +318,25 @@ def run_live_cycle(
         mt5_module=mt5_module,
         manage_connection=manage_connection,
     )
+    if order_retry_guard is not None:
+        observed_at = _utc_now()
+        order_retry_guard.observe_risk_result(risk_result, now_utc=observed_at)
+        order_retry_guard.observe_execution_result(
+            risk_result,
+            execution_result,
+            now_utc=observed_at,
+        )
     with SQLiteStore(db_url) as store:
         table_counts = {
             table: store.count_rows(table)
             for table in ("signals", "risk_checks", "orders", "account_snapshots")
         }
     LOGGER.info(
-        "live cycle complete symbols=%s signals=%s order_intents=%s approved=%s sent_to_mt5=%s table_counts=%s",
+        "live cycle complete symbols=%s signals=%s order_intents=%s suppressed=%s approved=%s sent_to_mt5=%s table_counts=%s",
         len(symbols),
         len(strategy_result.signals),
         len(strategy_result.order_intents),
+        len(suppressed_order_intents),
         len(risk_result.approved_orders),
         execution_result.summary()["sent_to_mt5"],
         dict(table_counts),
@@ -172,6 +349,7 @@ def run_live_cycle(
         strategy_result=strategy_result,
         risk_result=risk_result,
         execution_result=execution_result,
+        suppressed_order_intents=suppressed_order_intents,
         table_counts=table_counts,
     )
 
@@ -202,6 +380,7 @@ def run_live_session(
     # re-authorize to the broker, which churns the connection and resets the
     # terminal's AutoTrading state, causing order_send to be rejected.
     mt5 = cycle_kwargs.pop("mt5_module", None)
+    retry_guard = cycle_kwargs.pop("order_retry_guard", None) or OrderRetryGuard()
     owns_connection = mt5 is None
     initialized = False
     results: list[LiveCycleResult] = []
@@ -232,6 +411,7 @@ def run_live_session(
                 minutes_limit=minutes,
                 mt5_module=mt5,
                 manage_connection=False,
+                order_retry_guard=retry_guard,
                 **cycle_kwargs,
             )
             results.append(cycle_result)
@@ -279,7 +459,8 @@ def _run_strategy_and_risk_once(
     feature_config: FeatureConfig | None,
     now_utc: datetime,
     kill_switch_file: str | Path | None,
-) -> tuple[StrategyCycleResult, RiskBatchResult]:
+    order_retry_guard: OrderRetryGuard | None,
+) -> tuple[StrategyCycleResult, RiskBatchResult, tuple[SuppressedOrderIntent, ...]]:
     features = compute_feature_snapshots_from_store(
         database_url,
         target_symbols=target_symbols,
@@ -307,6 +488,14 @@ def _run_strategy_and_risk_once(
             latest_only=True,
         )
 
+    order_intents = strategy_result.order_intents
+    suppressed_order_intents: tuple[SuppressedOrderIntent, ...] = tuple()
+    if order_retry_guard is not None and order_intents:
+        order_intents, suppressed_order_intents = order_retry_guard.filter_order_intents(
+            order_intents,
+            now_utc=now_utc,
+        )
+
     risk_context = load_risk_context_from_store(
         database_url,
         target_symbols=target_symbols,
@@ -316,11 +505,11 @@ def _run_strategy_and_risk_once(
     risk_engine = RiskEngine(RiskLimits.from_config(config))
     with SQLiteStore(database_url) as store:
         risk_result = risk_engine.check_order_intents(
-            strategy_result.order_intents,
+            order_intents,
             risk_context,
             store=store,
         )
-    return strategy_result, risk_result
+    return strategy_result, risk_result, suppressed_order_intents
 
 
 def _execute_live_approved_orders(
@@ -392,10 +581,43 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _intent_fingerprint(intent: OrderIntent) -> str:
+    feature_time = intent.metadata.get("feature_time_utc")
+    return "|".join(
+        (
+            intent.strategy_version,
+            intent.client_order_id,
+            str(intent.signal_id or ""),
+            intent.symbol,
+            str(getattr(intent.side, "value", intent.side)),
+            _rounded_key(intent.requested_volume),
+            _rounded_key(intent.requested_price),
+            _rounded_key(intent.stop_loss),
+            _rounded_key(intent.take_profit),
+            str(feature_time or ""),
+        )
+    )
+
+
+def _rounded_key(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{float(value):.10g}"
+
+
 __all__ = [
     "DEFAULT_LIVE_POLL_SECONDS",
+    "DEFAULT_FAILED_ORDER_SUPPRESSION_SECONDS",
     "LiveCycleResult",
     "LiveRunError",
+    "OrderRetryGuard",
+    "SuppressedOrderIntent",
     "run_live_cycle",
     "run_live_session",
 ]

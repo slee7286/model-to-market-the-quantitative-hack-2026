@@ -44,7 +44,7 @@ class BacktestTests(unittest.TestCase):
             ):
                 self.assertIn(metric, result.metrics)
             self.assertGreaterEqual(result.metrics["max_drawdown"], 0.0)
-            self.assertLessEqual(result.metrics["max_gross_exposure"], 8.0)
+            self.assertLessEqual(result.metrics["max_gross_exposure"], 27.0 + 1e-9)
 
     def test_reports_are_written_with_selection_and_artifacts(self) -> None:
         comparison = run_synthetic_fixture_backtest(target_symbols=("BTC/USD", "ETH/USD"))
