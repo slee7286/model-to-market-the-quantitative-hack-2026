@@ -449,6 +449,11 @@ The proposal loop does not increase `risk_per_trade`, gross leverage, symbol
 leverage, margin usage, or drawdown limits. Proposed rows are stored in
 `strategy_versions` with `active=0`, no approver, and no approval timestamp.
 
+Current empirical live baseline after the 2026-06-23 overnight review is
+`ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.50`. The update raises the entry
+bar from the high-churn `1.0 / 0.05` setting and exits faster when momentum
+weakens. It does not loosen risk caps or live approval gates.
+
 Manual approval workflow:
 
 1. Review the inactive `strategy_versions` rows created by analytics.

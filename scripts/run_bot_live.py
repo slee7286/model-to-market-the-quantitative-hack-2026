@@ -175,6 +175,7 @@ def _print_execution_diagnostics(execution: ExecutionResult) -> None:
             f"price={refresh.get('live_requested_price')} "
             f"bid={refresh.get('live_bid')} ask={refresh.get('live_ask')} "
             f"tick_age_s={refresh.get('live_tick_age_seconds')} "
+            f"broker_offset_s={refresh.get('broker_time_offset_seconds')} "
             f"sl={refresh.get('refreshed_stop_loss')} tp={refresh.get('refreshed_take_profit')}",
             flush=True,
         )

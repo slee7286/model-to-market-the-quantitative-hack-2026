@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -177,6 +177,7 @@ class FakeLiveMT5(FakeMT5):
         send_retcode: int = FakeMT5.TRADE_RETCODE_DONE,
         send_volume: float | None = None,
         send_price: float | None = None,
+        tick_time_offset_seconds: float = 0.0,
         last_error: tuple[object, ...] = (-2, "order_check returned None"),
     ) -> None:
         super().__init__(last_error=last_error)
@@ -187,14 +188,16 @@ class FakeLiveMT5(FakeMT5):
         self.send_retcode = send_retcode
         self.send_volume = send_volume
         self.send_price = send_price
+        self.tick_time_offset_seconds = tick_time_offset_seconds
 
     def symbol_info_tick(self, symbol: str) -> object:
         self.calls.append("symbol_info_tick")
+        tick_time = datetime.now(timezone.utc) + timedelta(seconds=self.tick_time_offset_seconds)
         return {
             "symbol": symbol,
             "bid": self.bid,
             "ask": self.ask,
-            "time_msc": int(datetime.now(timezone.utc).timestamp() * 1000),
+            "time_msc": int(tick_time.timestamp() * 1000),
         }
 
     def symbol_info(self, symbol: str) -> object:
@@ -443,6 +446,65 @@ class ExecutionEngineTests(unittest.TestCase):
         refresh = payload["result"]["live_precheck"]["live_refresh"]
         self.assertEqual(refresh["original_requested_price"], 100.5)
         self.assertEqual(refresh["live_requested_price"], 101.0)
+        self.assertEqual(refresh["broker_time_offset_seconds"], 0.0)
+
+    def test_live_order_accepts_broker_server_tick_time_offset(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5(
+                    bid=100.9,
+                    ask=101.0,
+                    tick_time_offset_seconds=3600.0,
+                )
+
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(approved_order(), mt5_module=fake_mt5)
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(result.status, "filled")
+        self.assertIn("order_check", fake_mt5.calls)
+        self.assertIn("order_send", fake_mt5.calls)
+        refresh = result.result["live_precheck"]["live_refresh"]
+        self.assertEqual(refresh["broker_time_offset_seconds"], 3600.0)
+        self.assertGreater(refresh["raw_live_tick_skew_seconds"], 3500.0)
+        self.assertGreaterEqual(refresh["live_tick_age_seconds"], 0.0)
+        self.assertLess(refresh["live_tick_age_seconds"], 5.0)
+
+    def test_live_order_rejects_small_future_tick_skew(self) -> None:
+        old_value = os.environ.get("LIVE_APPROVED")
+        os.environ["LIVE_APPROVED"] = "true"
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                approval_file = Path(tmpdir) / "LIVE_APPROVED.json"
+                approval_file.write_text(json.dumps({"live_approved": True}), encoding="utf-8")
+                fake_mt5 = FakeLiveMT5(tick_time_offset_seconds=120.0)
+
+                result = ExecutionEngine(
+                    trade_mode="live",
+                    live_approval_file=approval_file,
+                ).execute_approved_order(approved_order(), mt5_module=fake_mt5)
+        finally:
+            if old_value is None:
+                os.environ.pop("LIVE_APPROVED", None)
+            else:
+                os.environ["LIVE_APPROVED"] = old_value
+
+        self.assertEqual(result.status, "rejected")
+        self.assertNotIn("order_check", fake_mt5.calls)
+        self.assertNotIn("order_send", fake_mt5.calls)
+        self.assertIn("future", result.message)
+        refresh = result.result["live_precheck"]["live_refresh"]
+        self.assertEqual(refresh["broker_time_offset_seconds"], 0.0)
 
     def test_live_liquidity_caps_volume_before_order_check(self) -> None:
         old_value = os.environ.get("LIVE_APPROVED")

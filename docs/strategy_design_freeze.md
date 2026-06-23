@@ -6,6 +6,8 @@ This document freezes the first code-ready strategy specification for the MT5 cr
 
 Current status update: the strategy described here has since been implemented through dry-run execution and offline analytics, and a separate guarded live runner now exists. The freeze itself remains the source for `momo_v1` strategy/risk intent. Any live session must still use `scripts/run_bot_live.py` with `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json`; unattended automation must not create those gates or place live orders.
 
+Empirical update on 2026-06-23: overnight live data and stored signal replay moved the active `momo_v1` thresholds to `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.50`. The lower `1.0 / 0.05` setting generated excessive churn, while the local replay over 723 stored signal rows favored fewer entries and faster exits. This is a conservative parameter update only; symbol allow-list, risk caps, live approval gates, and manual-review requirements remain unchanged.
+
 The strategy is constrained to the allowed crypto instruments only:
 
 - `BAR/USD` as HBAR/Hedera per `information.md`
@@ -248,7 +250,7 @@ BTC regime gates:
 
 For long positions, exit or reduce when any condition is true:
 
-- `final_score_raw <= 0.35`.
+- `final_score_raw <= 0.50`.
 - M5 close crosses below `ema_20`.
 - Stop-loss is reached.
 - Take-profit is reached.
@@ -260,7 +262,7 @@ For long positions, exit or reduce when any condition is true:
 
 For short positions, use the symmetric conditions:
 
-- `final_score_raw >= -0.35`.
+- `final_score_raw >= -0.50`.
 - M5 close crosses above `ema_20`.
 - Stop-loss, take-profit, trailing stop, time stop, stale data, spread, or portfolio guard triggers.
 

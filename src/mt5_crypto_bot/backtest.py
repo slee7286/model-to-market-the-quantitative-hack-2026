@@ -98,7 +98,7 @@ class BacktestConfig:
 
     initial_equity: float = INITIAL_EQUITY
     entry_threshold: float = 1.25
-    exit_threshold: float = 0.35
+    exit_threshold: float = 0.50
     max_gross_leverage: float = 8.0
     target_gross_leverage: float = 5.0
     max_margin_usage: float = 0.60
@@ -149,7 +149,7 @@ STRATEGY_SPECS: tuple[StrategySpec, ...] = (
         display_name="MVP momo_v1: BTC-regime volatility-managed momentum",
         kind="mvp",
         entry_threshold=1.25,
-        exit_threshold=0.35,
+        exit_threshold=0.50,
     ),
     StrategySpec(
         name="volatility_managed_momentum",

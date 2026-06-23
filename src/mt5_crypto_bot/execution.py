@@ -484,8 +484,10 @@ def _refresh_intent_to_live_market(
     bid = _as_optional_float(tick.get("bid"))
     ask = _as_optional_float(tick.get("ask"))
     new_price = ask if side == OrderSide.BUY.value else bid
-    tick_time = _tick_time_utc(tick)
-    tick_age_seconds = (_utc_now() - tick_time).total_seconds() if tick_time is not None else None
+    observed_at = _utc_now()
+    tick_time_info = _tick_time_utc_info(tick, observed_at_utc=observed_at)
+    tick_time = tick_time_info["time_utc"]
+    tick_age_seconds = (observed_at - tick_time).total_seconds() if tick_time is not None else None
     diagnostics: dict[str, Any] = {
         "live_refresh": {
             "broker_symbol": broker_symbol,
@@ -493,8 +495,16 @@ def _refresh_intent_to_live_market(
             "original_requested_price": intent.requested_price,
             "live_bid": bid,
             "live_ask": ask,
+            "observed_at_utc": observed_at.isoformat(),
+            "raw_live_tick_time_utc": (
+                tick_time_info["raw_time_utc"].isoformat()
+                if tick_time_info["raw_time_utc"] is not None
+                else None
+            ),
             "live_tick_time_utc": tick_time.isoformat() if tick_time else None,
             "live_tick_age_seconds": tick_age_seconds,
+            "raw_live_tick_skew_seconds": tick_time_info["raw_skew_seconds"],
+            "broker_time_offset_seconds": tick_time_info["broker_time_offset_seconds"],
         }
     }
     if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
@@ -759,13 +769,58 @@ def _metadata_with(intent: OrderIntent, key: str, value: Any) -> dict[str, Any]:
 
 
 def _tick_time_utc(tick: Mapping[str, Any]) -> datetime | None:
+    return _tick_time_utc_info(tick)["time_utc"]
+
+
+def _tick_time_utc_info(
+    tick: Mapping[str, Any],
+    *,
+    observed_at_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Parse and align an MT5 tick timestamp to UTC.
+
+    Some MT5 servers expose ``symbol_info_tick().time_msc`` in broker server
+    time rather than UTC. In London/BST this can make a fresh tick appear one
+    hour in the future. Treat only clear whole-hour positive skews as broker
+    clock offsets; small future skews remain invalid and are rejected by the
+    caller.
+    """
     raw = tick.get("time_msc") or tick.get("time") or tick.get("time_utc")
     if raw is None:
-        return None
+        return {
+            "time_utc": None,
+            "raw_time_utc": None,
+            "raw_skew_seconds": None,
+            "broker_time_offset_seconds": 0.0,
+        }
     try:
-        return _datetime_from_any(raw)
+        raw_time = _datetime_from_any(raw)
     except Exception:
-        return None
+        return {
+            "time_utc": None,
+            "raw_time_utc": None,
+            "raw_skew_seconds": None,
+            "broker_time_offset_seconds": 0.0,
+        }
+
+    observed_at = _datetime_from_any(observed_at_utc) if observed_at_utc is not None else _utc_now()
+    raw_skew_seconds = (raw_time - observed_at).total_seconds()
+    offset = timedelta(0)
+    if raw_skew_seconds > 60.0:
+        offset_hours = round(raw_skew_seconds / 3600.0)
+        if offset_hours:
+            candidate_offset = timedelta(hours=offset_hours)
+            aligned = raw_time - candidate_offset
+            aligned_skew_seconds = (aligned - observed_at).total_seconds()
+            if aligned_skew_seconds <= 5.0:
+                offset = candidate_offset
+
+    return {
+        "time_utc": raw_time - offset,
+        "raw_time_utc": raw_time,
+        "raw_skew_seconds": raw_skew_seconds,
+        "broker_time_offset_seconds": offset.total_seconds(),
+    }
 
 
 def _read_market_book(mt5_module: Any, broker_symbol: str) -> tuple[dict[str, Any], ...]:

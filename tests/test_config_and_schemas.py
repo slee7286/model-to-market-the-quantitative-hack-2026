@@ -37,6 +37,8 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertEqual(config.trade_mode, "dry_run")
         self.assertEqual(config.target_symbols, ALLOWED_SYMBOLS)
+        self.assertEqual(config.entry_threshold, 1.25)
+        self.assertEqual(config.exit_threshold, 0.50)
         self.assertIsNone(config.mt5_login)
         self.assertIsNone(config.mt5_password)
 
@@ -98,6 +100,8 @@ class SchemaValidationTests(unittest.TestCase):
     def test_strategy_params_validate_ordered_thresholds(self) -> None:
         params = StrategyParams()
         self.assertEqual(params.strategy_version, "momo_v1")
+        self.assertEqual(params.entry_threshold, 1.25)
+        self.assertEqual(params.exit_threshold, 0.50)
 
         with self.assertRaises(ValidationError):
             StrategyParams(entry_threshold=0.25, exit_threshold=0.35)

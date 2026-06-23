@@ -170,7 +170,7 @@ These are research-driven starting values, not live-approved production settings
 | ATR span | 14 M5 bars | Used for stops, shock filters, and normalization. |
 | Realized vol spans | 12, 24, 48 M5 bars | Used for volatility scaling and abnormal-vol filters. |
 | Entry threshold | 1.25 | Coarse-grid candidate: 1.0, 1.25, 1.5. |
-| Exit threshold | 0.35 | Coarse-grid candidate: 0.25, 0.35, 0.5. |
+| Exit threshold | 0.50 | Updated from 0.35 after 2026-06-23 overnight evidence favored faster exits; coarse-grid candidate: 0.25, 0.35, 0.5. |
 | ATR stop | 1.6x ATR | Coarse-grid candidate: 1.2, 1.6, 2.0. |
 | Take profit | 2.4x ATR | Coarse-grid candidate: 1.8, 2.4, 3.0. |
 | Trailing stop | 1.2x ATR | Activate only after unrealized profit exceeds 1 ATR. |

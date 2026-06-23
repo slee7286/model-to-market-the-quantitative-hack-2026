@@ -72,8 +72,10 @@ class BotConfig(StrictBaseModel):
 
     # Trade-frequency tuning. Defaults mirror StrategyParams; override via
     # ENTRY_THRESHOLD / EXIT_THRESHOLD to trade more or less often without code edits.
-    entry_threshold: float = Field(default=0.15, gt=0)
-    exit_threshold: float = Field(default=0.05, ge=0)
+    # 2026-06-23 empirical update: overnight data favored a stricter entry bar
+    # and faster exits than the earlier high-churn 1.0 / 0.05 live run.
+    entry_threshold: float = Field(default=1.25, gt=0)
+    exit_threshold: float = Field(default=0.50, ge=0)
 
     database_url: str = DEFAULT_DATABASE_URL
     postgres_uri: SecretStr | None = None
