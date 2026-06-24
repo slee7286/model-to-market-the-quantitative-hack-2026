@@ -45,6 +45,8 @@ class AnalyticsConfig:
     sharpe_interval_minutes: int = 15
     sharpe_rule_min_observations: int = 8
     output_dir: str = "reports/analytics"
+    start_time_utc: datetime | None = None
+    end_time_utc: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -82,7 +84,7 @@ def generate_analytics_report_from_store(
     generated_at = _datetime_from_any(now_utc) if now_utc else datetime.now(timezone.utc)
 
     with SQLiteStore(database_url) as store:
-        frames = _load_analytics_frames(store, symbols)
+        frames = _load_analytics_frames(store, symbols, config=analytics_config)
         equity_curve = build_equity_curve(
             frames["account_snapshots"],
             frames["fills"],
@@ -96,7 +98,11 @@ def generate_analytics_report_from_store(
             config=analytics_config,
         )
         symbol_attribution = compute_symbol_attribution(
-            frames["signals"], frames["orders"], frames["fills"], symbols
+            frames["signals"],
+            frames["orders"],
+            frames["fills"],
+            symbols,
+            positions=frames["positions"],
         )
         side_attribution = compute_side_attribution(frames["orders"], frames["fills"])
         signal_buckets = compute_signal_bucket_performance(
@@ -212,7 +218,14 @@ def compute_performance_metrics(
         raise AnalyticsError("equity curve has no numeric equity values")
 
     final_equity = float(curve["equity"].iloc[-1])
+    first_observed_equity = float(curve["equity"].iloc[1]) if len(curve) > 1 else final_equity
     total_return = final_equity / analytics_config.initial_equity - 1.0
+    window_equity_change = final_equity - first_observed_equity
+    window_return = (
+        window_equity_change / first_observed_equity
+        if abs(first_observed_equity) > EPSILON
+        else 0.0
+    )
     max_drawdown = float(_drawdown(curve["equity"]).max())
     sharpe, sharpe_observations = _sharpe_15m(curve, analytics_config)
 
@@ -231,8 +244,11 @@ def compute_performance_metrics(
 
     return {
         "initial_equity": analytics_config.initial_equity,
+        "first_observed_equity": first_observed_equity,
         "final_equity": final_equity,
         "return": float(total_return),
+        "window_equity_change": float(window_equity_change),
+        "window_return": float(window_return),
         "max_drawdown": max_drawdown,
         "sharpe_15m": sharpe,
         "sharpe_15m_observations": sharpe_observations,
@@ -249,6 +265,8 @@ def compute_symbol_attribution(
     orders: pd.DataFrame,
     fills: pd.DataFrame,
     symbols: Sequence[str],
+    *,
+    positions: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Aggregate PnL, dry-run activity, and signal counts by symbol."""
 
@@ -260,6 +278,20 @@ def compute_symbol_attribution(
         "symbol",
         "dry_run_order_count",
     )
+    filled_order_counts = _count_by(
+        orders[orders["status"].astype(str).isin(["filled", "partial"])]
+        if not orders.empty
+        else orders,
+        "symbol",
+        "filled_order_count",
+    )
+    failed_order_counts = _count_by(
+        orders[orders["status"].astype(str).isin(["failed", "rejected"])]
+        if not orders.empty
+        else orders,
+        "symbol",
+        "failed_order_count",
+    )
     if not fills.empty:
         fill_frame = fills.copy()
         fill_frame["profit"] = pd.to_numeric(fill_frame["profit"], errors="coerce").fillna(0.0)
@@ -270,15 +302,43 @@ def compute_symbol_attribution(
     else:
         pnl = pd.DataFrame(columns=["symbol", "fill_count", "pnl_usd"])
 
+    if positions is not None and not positions.empty:
+        position_frame = _latest_positions_frame(positions)
+        position_frame["profit"] = pd.to_numeric(
+            position_frame.get("profit"),
+            errors="coerce",
+        ).fillna(0.0)
+        open_pnl = position_frame.groupby("symbol", as_index=False).agg(
+            open_position_count=("symbol", "size"),
+            open_volume=("volume", "sum"),
+            open_pnl_usd=("profit", "sum"),
+        )
+    else:
+        open_pnl = pd.DataFrame(
+            columns=["symbol", "open_position_count", "open_volume", "open_pnl_usd"]
+        )
+
     frame = (
         base.merge(signal_counts, on="symbol", how="left")
         .merge(order_counts, on="symbol", how="left")
         .merge(dry_counts, on="symbol", how="left")
+        .merge(filled_order_counts, on="symbol", how="left")
+        .merge(failed_order_counts, on="symbol", how="left")
         .merge(pnl, on="symbol", how="left")
+        .merge(open_pnl, on="symbol", how="left")
     )
-    for column in ("signal_count", "order_count", "dry_run_order_count", "fill_count"):
+    for column in (
+        "signal_count",
+        "order_count",
+        "dry_run_order_count",
+        "filled_order_count",
+        "failed_order_count",
+        "fill_count",
+        "open_position_count",
+    ):
         frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0).astype(int)
-    frame["pnl_usd"] = pd.to_numeric(frame["pnl_usd"], errors="coerce").fillna(0.0)
+    for column in ("pnl_usd", "open_volume", "open_pnl_usd"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0.0)
     return frame.sort_values("symbol").reset_index(drop=True)
 
 
@@ -290,6 +350,20 @@ def compute_side_attribution(orders: pd.DataFrame, fills: pd.DataFrame) -> pd.Da
         orders[orders["status"].astype(str) == "dry_run"] if not orders.empty else orders,
         "side",
         "dry_run_order_count",
+    )
+    filled_order_counts = _count_by(
+        orders[orders["status"].astype(str).isin(["filled", "partial"])]
+        if not orders.empty
+        else orders,
+        "side",
+        "filled_order_count",
+    )
+    failed_order_counts = _count_by(
+        orders[orders["status"].astype(str).isin(["failed", "rejected"])]
+        if not orders.empty
+        else orders,
+        "side",
+        "failed_order_count",
     )
     if not fills.empty:
         fill_frame = fills.copy()
@@ -306,10 +380,20 @@ def compute_side_attribution(orders: pd.DataFrame, fills: pd.DataFrame) -> pd.Da
         | {"buy", "sell"}
     )
     frame = pd.DataFrame({"side": sides})
-    frame = frame.merge(order_counts, on="side", how="left").merge(
-        dry_counts, on="side", how="left"
-    ).merge(pnl, on="side", how="left")
-    for column in ("order_count", "dry_run_order_count", "fill_count"):
+    frame = (
+        frame.merge(order_counts, on="side", how="left")
+        .merge(dry_counts, on="side", how="left")
+        .merge(filled_order_counts, on="side", how="left")
+        .merge(failed_order_counts, on="side", how="left")
+        .merge(pnl, on="side", how="left")
+    )
+    for column in (
+        "order_count",
+        "dry_run_order_count",
+        "filled_order_count",
+        "failed_order_count",
+        "fill_count",
+    ):
         frame[column] = pd.to_numeric(frame[column], errors="coerce").fillna(0).astype(int)
     frame["pnl_usd"] = pd.to_numeric(frame["pnl_usd"], errors="coerce").fillna(0.0)
     return frame.sort_values("side").reset_index(drop=True)
@@ -585,39 +669,146 @@ def write_analytics_reports(
     }
 
 
-def _load_analytics_frames(store: SQLiteStore, symbols: tuple[str, ...]) -> dict[str, pd.DataFrame]:
+def _load_analytics_frames(
+    store: SQLiteStore,
+    symbols: tuple[str, ...],
+    *,
+    config: AnalyticsConfig,
+) -> dict[str, pd.DataFrame]:
     placeholders = ",".join("?" for _ in symbols)
+    account_where, account_params = _time_where(
+        "observed_at_utc",
+        config.start_time_utc,
+        config.end_time_utc,
+    )
+    fills_where, fills_time_params = _time_where(
+        "time_utc",
+        config.start_time_utc,
+        config.end_time_utc,
+    )
+    orders_where, orders_time_params = _time_where(
+        "submitted_at_utc",
+        config.start_time_utc,
+        config.end_time_utc,
+    )
+    signals_where, signals_time_params = _time_where(
+        "created_at_utc",
+        config.start_time_utc,
+        config.end_time_utc,
+    )
+    risk_where, risk_time_params = _time_where(
+        "checked_at_utc",
+        config.start_time_utc,
+        config.end_time_utc,
+    )
+    positions_where, positions_time_params = _time_where(
+        "observed_at_utc",
+        config.start_time_utc,
+        config.end_time_utc,
+    )
     return {
         "account_snapshots": _fetch_frame(
             store,
-            "SELECT * FROM account_snapshots ORDER BY observed_at_utc",
+            f"SELECT * FROM account_snapshots {account_where} ORDER BY observed_at_utc",
+            account_params,
         ),
         "fills": _fetch_frame(
             store,
-            f"SELECT * FROM fills WHERE symbol IN ({placeholders}) ORDER BY time_utc",
-            symbols,
+            f"""
+            SELECT *
+            FROM fills
+            WHERE symbol IN ({placeholders})
+            {fills_where.replace('WHERE', 'AND', 1)}
+            ORDER BY time_utc
+            """,
+            (*symbols, *fills_time_params),
         ),
         "orders": _fetch_frame(
             store,
-            f"SELECT * FROM orders WHERE symbol IN ({placeholders}) ORDER BY submitted_at_utc",
-            symbols,
+            f"""
+            SELECT *
+            FROM orders
+            WHERE symbol IN ({placeholders})
+            {orders_where.replace('WHERE', 'AND', 1)}
+            ORDER BY submitted_at_utc
+            """,
+            (*symbols, *orders_time_params),
         ),
         "signals": _fetch_frame(
             store,
-            f"SELECT * FROM signals WHERE symbol IN ({placeholders}) ORDER BY created_at_utc",
-            symbols,
+            f"""
+            SELECT *
+            FROM signals
+            WHERE symbol IN ({placeholders})
+            {signals_where.replace('WHERE', 'AND', 1)}
+            ORDER BY created_at_utc
+            """,
+            (*symbols, *signals_time_params),
         ),
         "risk_checks": _fetch_frame(
             store,
             f"""
             SELECT *
             FROM risk_checks
-            WHERE symbol IS NULL OR symbol IN ({placeholders})
+            WHERE (symbol IS NULL OR symbol IN ({placeholders}))
+            {risk_where.replace('WHERE', 'AND', 1)}
             ORDER BY checked_at_utc
             """,
-            symbols,
+            (*symbols, *risk_time_params),
+        ),
+        "positions": _fetch_frame(
+            store,
+            f"""
+            SELECT *
+            FROM positions_snapshots
+            WHERE symbol IN ({placeholders})
+            {positions_where.replace('WHERE', 'AND', 1)}
+            ORDER BY observed_at_utc
+            """,
+            (*symbols, *positions_time_params),
         ),
     }
+
+
+def _time_where(
+    column: str,
+    start_time_utc: datetime | None,
+    end_time_utc: datetime | None,
+) -> tuple[str, tuple[str, ...]]:
+    clauses: list[str] = []
+    params: list[str] = []
+    if start_time_utc is not None:
+        clauses.append(f"{column} >= ?")
+        params.append(_utc_iso_text(start_time_utc))
+    if end_time_utc is not None:
+        clauses.append(f"{column} <= ?")
+        params.append(_utc_iso_text(end_time_utc))
+    if not clauses:
+        return "", ()
+    return "WHERE " + " AND ".join(clauses), tuple(params)
+
+
+def _utc_iso_text(value: datetime) -> str:
+    return _datetime_from_any(value).isoformat()
+
+
+def _latest_positions_frame(positions: pd.DataFrame) -> pd.DataFrame:
+    frame = positions.copy()
+    if frame.empty:
+        return frame
+    frame["observed_at_utc"] = pd.to_datetime(
+        frame["observed_at_utc"],
+        utc=True,
+        errors="coerce",
+        format="mixed",
+    )
+    frame["volume"] = pd.to_numeric(frame.get("volume"), errors="coerce").fillna(0.0)
+    frame = frame.dropna(subset=["observed_at_utc", "symbol"])
+    if frame.empty:
+        return frame
+    latest = frame.sort_values("observed_at_utc").groupby("symbol", as_index=False).tail(1)
+    side = latest.get("side", pd.Series(dtype=str)).astype(str).str.lower()
+    return latest[(latest["volume"] > EPSILON) & side.isin(["long", "short"])]
 
 
 def _fetch_frame(
@@ -780,7 +971,11 @@ def _render_markdown_report(
         "",
         "| Metric | Value |",
         "| --- | ---: |",
+        f"| First observed equity | {metrics['first_observed_equity']:.2f} |",
+        f"| Final equity | {metrics['final_equity']:.2f} |",
         f"| Return | {_format_percent(metrics['return'])} |",
+        f"| Window equity change | {metrics['window_equity_change']:.2f} |",
+        f"| Window return | {_format_percent(metrics['window_return'])} |",
         f"| Max drawdown | {_format_percent(metrics['max_drawdown'])} |",
         f"| 15-minute Sharpe | {metrics['sharpe_15m']:.6g} |",
         f"| 15-minute observations | {metrics['sharpe_15m_observations']} |",

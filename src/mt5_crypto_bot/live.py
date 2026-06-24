@@ -291,9 +291,9 @@ def run_live_cycle(
         symbol_map_path=symbol_map_path,
         settings=collector_settings,
         mt5_module=mt5_module,
-        now_utc=started_at,
         manage_connection=manage_connection,
     )
+    evaluation_at = _utc_now()
 
     try:
         strategy_result, risk_result, suppressed_order_intents = _run_strategy_and_risk_once(
@@ -301,7 +301,7 @@ def run_live_cycle(
             config=config,
             target_symbols=symbols,
             feature_config=feature_config,
-            now_utc=started_at,
+            now_utc=evaluation_at,
             kill_switch_file=kill_switch_file,
             order_retry_guard=order_retry_guard,
         )
@@ -556,6 +556,7 @@ def _execute_live_approved_orders(
                 broker_to_canonical=broker_to_canonical,
                 observed_at_utc=_utc_now(),
                 store=store,
+                target_symbols=target_symbols,
             )
             read_deals(
                 mt5,

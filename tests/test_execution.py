@@ -235,6 +235,44 @@ class FakeLiveMT5(FakeMT5):
         )
 
 
+class BrokerOffsetHistoryMT5(FakeMT5):
+    def __init__(self) -> None:
+        super().__init__()
+        self.history_ranges: list[tuple[datetime, datetime]] = []
+
+    def symbol_info_tick(self, symbol: str) -> object:
+        self.calls.append("symbol_info_tick")
+        broker_time = datetime.now(timezone.utc) + timedelta(hours=1)
+        return {
+            "symbol": symbol,
+            "bid": 100.0,
+            "ask": 100.1,
+            "time_msc": int(broker_time.timestamp() * 1000),
+        }
+
+    def history_deals_get(self, start: datetime, end: datetime) -> tuple[object, ...]:
+        self.calls.append("history_deals_get")
+        self.history_ranges.append((start, end))
+        if len(self.history_ranges) == 1:
+            return ()
+        broker_time = NOW + timedelta(hours=1)
+        return (
+            SimpleObject(
+                ticket=901,
+                order=301,
+                position_id=101,
+                symbol="BTCUSD",
+                type=self.DEAL_TYPE_BUY,
+                volume=1.5,
+                price=100.0,
+                profit=25.0,
+                commission=0.0,
+                swap=0.0,
+                time_msc=int(broker_time.timestamp() * 1000),
+            ),
+        )
+
+
 class StopsLevelFakeLiveMT5(FakeLiveMT5):
     def symbol_info(self, symbol: str) -> object:
         info = dict(super().symbol_info(symbol))
@@ -658,6 +696,51 @@ class ExecutionEngineTests(unittest.TestCase):
         self.assertAlmostEqual(fills[0].slippage_bps or 0.0, 101.01010101010101)
         self.assertIn("positions_get", fake_mt5.calls)
         self.assertIn("history_deals_get", fake_mt5.calls)
+        self.assertNotIn("order_check", fake_mt5.calls)
+        self.assertNotIn("order_send", fake_mt5.calls)
+
+    def test_read_positions_records_explicit_flat_snapshots_for_missing_symbols(self) -> None:
+        fake_mt5 = FakeMT5()
+        mapping = {"BTCUSD": "BTC/USD"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with SQLiteStore(Path(tmpdir) / "trading.db") as store:
+                read_positions(
+                    fake_mt5,
+                    broker_to_canonical=mapping,
+                    store=store,
+                    target_symbols=("BTC/USD", "ETH/USD"),
+                )
+                rows = store.fetch_all(
+                    "SELECT symbol, side, volume FROM positions_snapshots ORDER BY symbol"
+                )
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["symbol"], "BTC/USD")
+        self.assertEqual(rows[0]["side"], "long")
+        self.assertEqual(rows[1]["symbol"], "ETH/USD")
+        self.assertEqual(rows[1]["side"], "flat")
+        self.assertEqual(rows[1]["volume"], 0.0)
+
+    def test_read_deals_retries_broker_server_time_and_normalizes_fill_time(self) -> None:
+        fake_mt5 = BrokerOffsetHistoryMT5()
+        mapping = {"BTCUSD": "BTC/USD"}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with SQLiteStore(Path(tmpdir) / "trading.db") as store:
+                fills = read_deals(
+                    fake_mt5,
+                    date_from=NOW - timedelta(minutes=5),
+                    date_to=NOW + timedelta(minutes=5),
+                    broker_to_canonical=mapping,
+                    store=store,
+                )
+                rows = store.fetch_all("SELECT deal_ticket, time_utc FROM fills")
+
+        self.assertEqual(len(fake_mt5.history_ranges), 2)
+        self.assertIsNone(fake_mt5.history_ranges[1][0].tzinfo)
+        self.assertEqual(len(fills), 1)
+        self.assertEqual(fills[0].filled_at_utc, NOW)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("2026-06-22T12:00:00", rows[0]["time_utc"])
         self.assertNotIn("order_check", fake_mt5.calls)
         self.assertNotIn("order_send", fake_mt5.calls)
 

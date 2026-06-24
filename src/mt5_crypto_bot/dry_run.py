@@ -175,6 +175,7 @@ def run_dry_run_cycle(
     data_mode = "mt5_read_only"
     fallback_reason: str | None = None
     collection_result: CollectionCycleResult | None = None
+    evaluation_at = now
     if force_fixture:
         data_mode = "synthetic_fixture_forced"
         collection_result = seed_synthetic_fixture_data(
@@ -186,6 +187,7 @@ def run_dry_run_cycle(
         )
     else:
         try:
+            collection_observed_at = now if now_utc is not None else None
             collection_result = collect_market_account_once(
                 config,
                 database_url=db_url,
@@ -193,8 +195,9 @@ def run_dry_run_cycle(
                 symbol_map_path=symbol_map_path,
                 settings=collector_settings,
                 mt5_module=mt5_module,
-                now_utc=now,
+                now_utc=collection_observed_at,
             )
+            evaluation_at = _utc_now() if now_utc is None else now
         except SAFE_COLLECTION_ERRORS as exc:
             fallback_reason = _exception_summary(exc)
             if not fixture_fallback:
@@ -226,7 +229,7 @@ def run_dry_run_cycle(
             config=config,
             target_symbols=symbols,
             feature_config=feature_config,
-            now_utc=now,
+            now_utc=evaluation_at,
             enforce_freshness=enforce_freshness,
             kill_switch_file=kill_switch_file,
         )
@@ -366,7 +369,6 @@ def collect_market_account_once(
             initialize_mt5(credentials, mt5)
             initialized = True
             login_mt5(credentials, mt5)
-        observed_at = _to_utc(now_utc) if now_utc is not None else _utc_now()
         with SQLiteStore(database_url) as store:
             collector = MarketDataCollector(
                 mt5,
@@ -375,9 +377,7 @@ def collect_market_account_once(
                 settings=settings or CollectorSettings(),
             )
             result = collector.collect_once()
-            store.upsert_account_snapshot(
-                _account_snapshot_from_mt5(mt5, store=store, observed_at_utc=observed_at)
-            )
+            observed_at = _to_utc(now_utc) if now_utc is not None else _utc_now()
             position_snapshots = (
                 read_positions(
                     mt5,
@@ -394,6 +394,14 @@ def collect_market_account_once(
                 observed_at_utc=observed_at,
                 existing_symbols={snapshot.symbol for snapshot in position_snapshots},
                 source="mt5_read_only_flat_snapshot",
+            )
+            store.upsert_account_snapshot(
+                _account_snapshot_from_mt5(
+                    mt5,
+                    store=store,
+                    observed_at_utc=observed_at,
+                    position_snapshots=position_snapshots,
+                )
             )
             return result
     finally:
@@ -648,10 +656,16 @@ def _account_snapshot_from_mt5(
     *,
     store: SQLiteStore,
     observed_at_utc: datetime,
+    position_snapshots: Sequence[PositionSnapshot] = (),
 ) -> AccountSnapshot:
     account = read_account_info(mt5_module)
     balance = _float_or_default(account.get("balance"), INITIAL_EQUITY)
     equity = _float_or_default(account.get("equity"), balance)
+    gross_leverage = _gross_leverage_from_positions(
+        store,
+        position_snapshots=position_snapshots,
+        equity=equity,
+    )
     return AccountSnapshot(
         observed_at_utc=observed_at_utc,
         balance=max(balance, 0.0),
@@ -660,11 +674,40 @@ def _account_snapshot_from_mt5(
         margin=max(_float_or_default(account.get("margin"), 0.0), 0.0),
         margin_free=_optional_float(account.get("margin_free")),
         margin_level=_optional_float(account.get("margin_level")),
-        gross_leverage=0.0,
+        gross_leverage=gross_leverage,
         max_drawdown=_max_drawdown_with_equity(store, equity),
         currency=str(account.get("currency") or "USD"),
         raw={"source": "mt5.account_info", **account},
     )
+
+
+def _gross_leverage_from_positions(
+    store: SQLiteStore,
+    *,
+    position_snapshots: Sequence[PositionSnapshot],
+    equity: float,
+) -> float:
+    """Compute account gross leverage from currently open position snapshots."""
+    if equity <= 0:
+        return 0.0
+    gross_notional = 0.0
+    for position in position_snapshots:
+        if position.volume <= 0:
+            continue
+        price = position.price_current or position.price_open
+        if price is None or price <= 0:
+            continue
+        metadata = store.fetch_one(
+            "SELECT trade_contract_size FROM symbol_metadata WHERE symbol = ?",
+            (position.symbol,),
+        )
+        if metadata is None:
+            continue
+        contract_size = _optional_float(metadata["trade_contract_size"])
+        if contract_size is None or contract_size <= 0:
+            continue
+        gross_notional += abs(float(position.volume) * float(price) * contract_size)
+    return gross_notional / equity
 
 
 def _default_account_snapshot(now: datetime, *, reason: str | None) -> AccountSnapshot:

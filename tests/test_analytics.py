@@ -26,6 +26,8 @@ from mt5_crypto_bot.schemas import (
     FillSide,
     OrderIntent,
     OrderSide,
+    PositionSide,
+    PositionSnapshot,
     RiskCheck,
     Signal,
     SignalDecision,
@@ -79,6 +81,7 @@ class AnalyticsTests(unittest.TestCase):
 
             self.assertEqual(report.metrics["real_fill_count"], 1)
             self.assertEqual(report.metrics["dry_run_order_count"], 1)
+            self.assertAlmostEqual(report.metrics["window_equity_change"], 12_000.0)
             self.assertGreater(len(report.parameter_proposals), 0)
             self.assertTrue(paths["markdown"].exists())
             markdown = paths["markdown"].read_text(encoding="utf-8")
@@ -111,6 +114,47 @@ class AnalyticsTests(unittest.TestCase):
                 self.assertLessEqual(params["max_gross_leverage"], 28.0)
                 self.assertLessEqual(params["max_symbol_leverage"], 28.0)
                 self.assertLessEqual(params["max_margin_usage"], 0.90)
+
+    def test_report_can_focus_on_session_window_and_open_positions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "trading.db"
+            with SQLiteStore(db_path) as store:
+                self._seed_analytics_store(store)
+                store.upsert_account_snapshot(
+                    AccountSnapshot(
+                        observed_at_utc=NOW + timedelta(hours=2),
+                        balance=1_000_000.0,
+                        equity=1_050_000.0,
+                        profit=50_000.0,
+                        gross_leverage=2.0,
+                    )
+                )
+                store.insert_position_snapshot(
+                    PositionSnapshot(
+                        observed_at_utc=NOW + timedelta(hours=2),
+                        symbol="BTC/USD",
+                        side=PositionSide.LONG,
+                        volume=2.0,
+                        price_open=100.0,
+                        price_current=110.0,
+                        profit=20.0,
+                    )
+                )
+
+            report = generate_analytics_report_from_store(
+                db_path,
+                target_symbols=("BTC/USD", "ETH/USD"),
+                config=AnalyticsConfig(start_time_utc=NOW + timedelta(hours=1, minutes=30)),
+                include_shadow_evaluation=False,
+                store_proposals=False,
+                now_utc=NOW + timedelta(hours=3),
+            )
+
+        self.assertEqual(report.metrics["first_observed_equity"], 1_050_000.0)
+        self.assertEqual(report.metrics["window_equity_change"], 0.0)
+        symbol_rows = report.symbol_attribution.set_index("symbol")
+        self.assertEqual(float(symbol_rows.loc["BTC/USD", "open_volume"]), 2.0)
+        self.assertEqual(float(symbol_rows.loc["BTC/USD", "open_pnl_usd"]), 20.0)
 
     def test_signal_score_buckets_are_stable(self) -> None:
         self.assertEqual(bucket_signal_score(-2.0), "strong_short")

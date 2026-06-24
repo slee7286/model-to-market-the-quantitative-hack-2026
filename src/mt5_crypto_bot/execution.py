@@ -671,13 +671,15 @@ def read_positions(
     broker_to_canonical: Mapping[str, str] | None = None,
     observed_at_utc: datetime | None = None,
     store: SQLiteStore | None = None,
+    target_symbols: Sequence[str] | None = None,
 ) -> tuple[PositionSnapshot, ...]:
     """Read open MT5 positions without modifying orders or positions."""
+    observed_at = _datetime_from_any(observed_at_utc or _utc_now())
     raw_positions = mt5_module.positions_get()
     snapshots = tuple(
         snapshot
         for snapshot in (
-            _position_snapshot_from_mt5(position, mt5_module, broker_to_canonical, observed_at_utc)
+            _position_snapshot_from_mt5(position, mt5_module, broker_to_canonical, observed_at)
             for position in _materialize_mt5_sequence(raw_positions)
         )
         if snapshot is not None
@@ -685,6 +687,25 @@ def read_positions(
     if store is not None:
         for snapshot in snapshots:
             store.insert_position_snapshot(snapshot)
+        if target_symbols is not None:
+            existing = {snapshot.symbol for snapshot in snapshots}
+            for symbol in target_symbols:
+                canonical = normalize_symbol(symbol)
+                if canonical in existing:
+                    continue
+                store.insert_position_snapshot(
+                    PositionSnapshot(
+                        observed_at_utc=observed_at,
+                        symbol=canonical,
+                        side=PositionSide.FLAT,
+                        volume=0.0,
+                        profit=0.0,
+                        raw={
+                            "source": "live_reconciliation_flat_snapshot",
+                            "mt5_positions_get_returned_symbol": False,
+                        },
+                    )
+                )
     return snapshots
 
 
@@ -699,12 +720,27 @@ def read_deals(
     """Read MT5 deal history without placing, modifying, or closing orders."""
     start = _datetime_from_any(date_from) if date_from is not None else _utc_now() - timedelta(days=1)
     end = _datetime_from_any(date_to) if date_to is not None else _utc_now()
-    raw_deals = mt5_module.history_deals_get(start, end)
+    broker_offset_seconds = _infer_broker_time_offset_seconds(
+        mt5_module,
+        broker_to_canonical=broker_to_canonical,
+    )
+    raw_deals = _history_deals_get_with_broker_time_fallback(
+        mt5_module,
+        start,
+        end,
+        broker_offset_seconds=broker_offset_seconds,
+    )
     order_lookup = _load_order_lookup_for_fills(store) if store is not None else {}
     fills = tuple(
         fill
         for fill in (
-            _fill_from_mt5_deal(deal, mt5_module, broker_to_canonical, order_lookup)
+            _fill_from_mt5_deal(
+                deal,
+                mt5_module,
+                broker_to_canonical,
+                order_lookup,
+                broker_time_offset_seconds=broker_offset_seconds,
+            )
             for deal in _materialize_mt5_sequence(raw_deals)
         )
         if fill is not None
@@ -713,6 +749,30 @@ def read_deals(
         for fill in fills:
             store.insert_fill(fill)
     return fills
+
+
+def _history_deals_get_with_broker_time_fallback(
+    mt5_module: Any,
+    start: datetime,
+    end: datetime,
+    *,
+    broker_offset_seconds: float,
+) -> tuple[Any, ...]:
+    """Query deals in UTC and, if needed, broker/server time.
+
+    The competition MT5 server has been observed returning tick timestamps one
+    hour ahead of UTC. Some terminal history calls interpret query datetimes in
+    that broker/server clock. Keep the existing UTC query first, then retry with
+    the inferred offset when UTC returns no rows.
+    """
+
+    first = _materialize_mt5_sequence(mt5_module.history_deals_get(start, end))
+    if first or abs(broker_offset_seconds) <= EPSILON:
+        return tuple(first)
+    offset = timedelta(seconds=broker_offset_seconds)
+    shifted_start = (start + offset).replace(tzinfo=None)
+    shifted_end = (end + offset).replace(tzinfo=None)
+    return tuple(_materialize_mt5_sequence(mt5_module.history_deals_get(shifted_start, shifted_end)))
 
 
 def _coerce_approved_order(value: RiskApprovedOrder | Mapping[str, Any]) -> RiskApprovedOrder:
@@ -823,6 +883,33 @@ def _tick_time_utc_info(
         "raw_skew_seconds": raw_skew_seconds,
         "broker_time_offset_seconds": offset.total_seconds(),
     }
+
+
+def _infer_broker_time_offset_seconds(
+    mt5_module: Any,
+    *,
+    broker_to_canonical: Mapping[str, str] | None,
+) -> float:
+    if mt5_module is None or not hasattr(mt5_module, "symbol_info_tick"):
+        return 0.0
+    symbols = tuple(broker_to_canonical.keys()) if broker_to_canonical else ()
+    for broker_symbol in symbols:
+        try:
+            tick = _object_to_mapping(mt5_module.symbol_info_tick(broker_symbol))
+        except Exception:
+            continue
+        info = _tick_time_utc_info(tick, observed_at_utc=_utc_now())
+        offset = _as_optional_float(info.get("broker_time_offset_seconds"))
+        if offset is not None and abs(offset) > EPSILON:
+            return float(offset)
+    return 0.0
+
+
+def _server_time_to_utc(value: Any, *, broker_time_offset_seconds: float = 0.0) -> datetime:
+    parsed = _datetime_from_any(value)
+    if abs(broker_time_offset_seconds) <= EPSILON:
+        return parsed
+    return parsed - timedelta(seconds=broker_time_offset_seconds)
 
 
 def _read_market_book(mt5_module: Any, broker_symbol: str) -> tuple[dict[str, Any], ...]:
@@ -1013,6 +1100,8 @@ def _fill_from_mt5_deal(
     mt5_module: Any,
     broker_to_canonical: Mapping[str, str] | None,
     order_lookup: Mapping[int, Mapping[str, Any]] | None = None,
+    *,
+    broker_time_offset_seconds: float = 0.0,
 ) -> Fill | None:
     data = _object_to_mapping(raw_deal)
     symbol = _canonical_symbol(data.get("symbol"), broker_to_canonical)
@@ -1048,7 +1137,10 @@ def _fill_from_mt5_deal(
         order_ticket=order_ticket,
         position_id=_as_optional_int(data.get("position_id")),
         symbol=symbol,
-        filled_at_utc=_datetime_from_any(data.get("time_msc") or data.get("time") or _utc_now()),
+        filled_at_utc=_server_time_to_utc(
+            data.get("time_msc") or data.get("time") or _utc_now(),
+            broker_time_offset_seconds=broker_time_offset_seconds,
+        ),
         side=side,
         volume=volume,
         price=price,

@@ -96,6 +96,8 @@ def recommend_thresholds_from_store(
     entry_grid: Sequence[float] = DEFAULT_ENTRY_GRID,
     exit_grid: Sequence[float] = DEFAULT_EXIT_GRID,
     min_rows: int = MIN_RECOMMENDATION_ROWS,
+    start_time_utc: datetime | None = None,
+    end_time_utc: datetime | None = None,
 ) -> ThresholdRecommendation:
     """Recommend thresholds from stored signal scores and next-bar M5 returns.
 
@@ -107,7 +109,12 @@ def recommend_thresholds_from_store(
 
     symbols = normalize_symbols(target_symbols)
     with SQLiteStore(database_url) as store:
-        frame = _load_signal_return_frame(store, symbols)
+        frame = _load_signal_return_frame(
+            store,
+            symbols,
+            start_time_utc=start_time_utc,
+            end_time_utc=end_time_utc,
+        )
 
     if frame.empty or len(frame) < min_rows:
         return ThresholdRecommendation(
@@ -169,8 +176,24 @@ def recommend_thresholds_from_store(
     )
 
 
-def _load_signal_return_frame(store: SQLiteStore, symbols: tuple[str, ...]) -> pd.DataFrame:
+def _load_signal_return_frame(
+    store: SQLiteStore,
+    symbols: tuple[str, ...],
+    *,
+    start_time_utc: datetime | None = None,
+    end_time_utc: datetime | None = None,
+) -> pd.DataFrame:
     placeholders = ",".join("?" for _ in symbols)
+    signals_time_where, signals_time_params = _time_where(
+        "created_at_utc",
+        start_time_utc,
+        end_time_utc,
+    )
+    bars_time_where, bars_time_params = _time_where(
+        "time_utc",
+        start_time_utc - pd.Timedelta(minutes=10) if start_time_utc else None,
+        end_time_utc + pd.Timedelta(minutes=10) if end_time_utc else None,
+    )
     signals = pd.DataFrame(
         [
             dict(row)
@@ -179,9 +202,10 @@ def _load_signal_return_frame(store: SQLiteStore, symbols: tuple[str, ...]) -> p
                 SELECT signal_id, created_at_utc, symbol, score, decision, features_json
                 FROM signals
                 WHERE symbol IN ({placeholders})
+                {signals_time_where.replace('WHERE', 'AND', 1)}
                 ORDER BY symbol, created_at_utc
                 """,
-                symbols,
+                (*symbols, *signals_time_params),
             )
         ]
     )
@@ -193,9 +217,10 @@ def _load_signal_return_frame(store: SQLiteStore, symbols: tuple[str, ...]) -> p
                 SELECT symbol, time_utc, close, spread
                 FROM bars
                 WHERE symbol IN ({placeholders}) AND timeframe = 'M5'
+                {bars_time_where.replace('WHERE', 'AND', 1)}
                 ORDER BY symbol, time_utc
                 """,
-                symbols,
+                (*symbols, *bars_time_params),
             )
         ]
     )
@@ -217,6 +242,16 @@ def _load_signal_return_frame(store: SQLiteStore, symbols: tuple[str, ...]) -> p
     signal_frame = pd.DataFrame(signal_rows).dropna(subset=["symbol", "score"])
     signal_frame["feature_time_utc"] = _to_utc_series(signal_frame["feature_time_utc"])
     signal_frame = signal_frame.dropna(subset=["feature_time_utc"])
+    if start_time_utc is not None:
+        signal_frame = signal_frame[
+            signal_frame["feature_time_utc"] >= pd.Timestamp(_datetime_or_nat(start_time_utc))
+        ]
+    if end_time_utc is not None:
+        signal_frame = signal_frame[
+            signal_frame["feature_time_utc"] <= pd.Timestamp(_datetime_or_nat(end_time_utc))
+        ]
+    if signal_frame.empty:
+        return pd.DataFrame()
 
     bar_frame = bars.copy()
     bar_frame["time_utc"] = _to_utc_series(bar_frame["time_utc"])
@@ -255,6 +290,24 @@ def _load_signal_return_frame(store: SQLiteStore, symbols: tuple[str, ...]) -> p
     return joined.dropna(subset=["score", "return_bps"]).sort_values(
         ["symbol", "feature_time_utc"]
     ).reset_index(drop=True)
+
+
+def _time_where(
+    column: str,
+    start_time_utc: datetime | None,
+    end_time_utc: datetime | None,
+) -> tuple[str, tuple[str, ...]]:
+    clauses: list[str] = []
+    params: list[str] = []
+    if start_time_utc is not None:
+        clauses.append(f"{column} >= ?")
+        params.append(_datetime_or_nat(start_time_utc).isoformat())
+    if end_time_utc is not None:
+        clauses.append(f"{column} <= ?")
+        params.append(_datetime_or_nat(end_time_utc).isoformat())
+    if not clauses:
+        return "", ()
+    return "WHERE " + " AND ".join(clauses), tuple(params)
 
 
 def _candidate_pairs(

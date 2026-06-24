@@ -121,6 +121,40 @@ VOLATILITY_FLOOR: dict[str, float] = {
     "XRP/USD": 0.0035,
 }
 
+# Empirical PnL-sprint overlay from the public leaderboard/profile point and
+# local post-2026-06-23 22:30 UTC DB window: SOL long carried the profitable
+# run, while XRP/BTC were mostly ballast/closeout noise. These multipliers
+# increase conviction sizing without changing rules-level risk caps.
+EMPIRICAL_DIRECTIONAL_LEVERAGE_MULTIPLIER: dict[tuple[str, str], float] = {
+    ("SOL/USD", "long"): 4.5,
+    ("SOL/USD", "short"): 0.50,
+    ("BTC/USD", "long"): 1.50,
+    ("BTC/USD", "short"): 0.50,
+    ("XRP/USD", "long"): 0.75,
+    ("XRP/USD", "short"): 0.25,
+}
+
+EMPIRICAL_DIRECTIONAL_LEVERAGE_FLOOR: dict[tuple[str, str], float] = {
+    ("SOL/USD", "long"): 6.0,
+}
+
+EMPIRICAL_DIRECTIONAL_LEVERAGE_CAP: dict[tuple[str, str], float] = {
+    ("SOL/USD", "long"): 12.0,
+    ("SOL/USD", "short"): 3.0,
+    ("BTC/USD", "long"): 6.0,
+    ("BTC/USD", "short"): 3.0,
+    ("XRP/USD", "long"): 2.0,
+    ("XRP/USD", "short"): 1.0,
+}
+
+EMPIRICAL_TAKE_PROFIT_MULTIPLIER: dict[tuple[str, str], float] = {
+    ("SOL/USD", "long"): 4.0,
+}
+
+EMPIRICAL_STOP_MULTIPLIER: dict[tuple[str, str], float] = {
+    ("SOL/USD", "long"): 1.8,
+}
+
 REQUIRED_METADATA_FIELDS: tuple[str, ...] = (
     "broker_symbol",
     "digits",
@@ -411,6 +445,7 @@ class DryRunStrategyEngine:
         target_leverage = _target_leverage(
             symbol,
             score,
+            side=candidate_side,
             rv_1h_equiv=_as_optional_float(data.get("rv_1h_equiv")),
             params=self.params,
             max_drawdown=strategy_context.max_drawdown,
@@ -734,6 +769,19 @@ class DryRunStrategyEngine:
     ) -> OrderIntent:
         symbol = signal.symbol
         requested_price = _entry_price(row, side)
+        contract_size = metadata.trade_contract_size
+        requested_notional = (
+            float(requested_volume) * requested_price * contract_size
+            if requested_price is not None and contract_size is not None
+            else None
+        )
+        target_notional = (
+            float(signal.target_volume) * requested_price * contract_size
+            if signal.target_volume is not None
+            and requested_price is not None
+            and contract_size is not None
+            else None
+        )
         return OrderIntent(
             client_order_id=f"intent-{signal.signal_id}",
             signal_id=signal.signal_id,
@@ -752,6 +800,10 @@ class DryRunStrategyEngine:
                 "broker_symbol": metadata.broker_symbol,
                 "signal_decision": signal.decision,
                 "target_leverage": signal.target_leverage,
+                "target_volume": signal.target_volume,
+                "target_notional": target_notional,
+                "requested_notional": requested_notional,
+                "contract_size": contract_size,
                 "feature_time_utc": signal.features.get("feature_time_utc"),
             },
         )
@@ -1150,6 +1202,7 @@ def _chunk_order_intent_for_broker_limit(
     result: list[OrderIntent] = []
     for index, volume in enumerate(volumes, start=1):
         suffix = f"part{index:03d}of{emitted:03d}"
+        requested_notional = _chunk_requested_notional(intent, volume)
         metadata_update = {
             **intent.metadata,
             "chunked_order": True,
@@ -1159,6 +1212,7 @@ def _chunk_order_intent_for_broker_limit(
             "original_requested_volume": intent.requested_volume,
             "broker_order_volume_max": max_volume,
             "deferred_requested_volume": deferred,
+            "requested_notional": requested_notional,
         }
         result.append(
             intent.model_copy(
@@ -1173,6 +1227,14 @@ def _chunk_order_intent_for_broker_limit(
     return tuple(result)
 
 
+def _chunk_requested_notional(intent: OrderIntent, volume: float) -> float | None:
+    price = _as_optional_float(intent.requested_price)
+    contract_size = _as_optional_float(intent.metadata.get("contract_size"))
+    if price is None or contract_size is None:
+        return None
+    return float(volume) * price * contract_size
+
+
 def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
@@ -1181,6 +1243,7 @@ def _target_leverage(
     symbol: str,
     score: float,
     *,
+    side: Direction,
     rv_1h_equiv: float | None,
     params: StrategyParams,
     max_drawdown: float,
@@ -1193,7 +1256,12 @@ def _target_leverage(
     normal_cap = min(NORMAL_SYMBOL_LEVERAGE_CAP[symbol], params.max_symbol_leverage)
     hard_cap = min(HARD_SYMBOL_LEVERAGE_CAP[symbol], params.max_symbol_leverage)
     target = normal_cap * (0.35 + 0.65 * score_scale) * vol_scale
-    return min(max(target, 0.0), hard_cap, params.max_gross_leverage)
+    side_key = (symbol, _enum_value(side))
+    multiplier = EMPIRICAL_DIRECTIONAL_LEVERAGE_MULTIPLIER.get(side_key, 1.0)
+    floor = EMPIRICAL_DIRECTIONAL_LEVERAGE_FLOOR.get(side_key, 0.0)
+    directional_cap = EMPIRICAL_DIRECTIONAL_LEVERAGE_CAP.get(side_key, hard_cap)
+    target = max(target * multiplier, floor)
+    return min(max(target, 0.0), hard_cap, directional_cap, params.max_gross_leverage)
 
 
 def _entry_sizing(
@@ -1218,8 +1286,14 @@ def _entry_sizing(
     if atr is None or spread is None or point is None:
         return _SizingResult(block_reason="block: stop inputs unavailable")
     min_stop_distance = max(3.0 * spread, _metadata_min_stop_distance(metadata))
-    stop_distance = max(params.atr_stop_multiple * atr, min_stop_distance)
-    take_profit_distance = max(params.take_profit_multiple * atr, min_stop_distance)
+    side_key = (symbol, side.value)
+    stop_multiple = EMPIRICAL_STOP_MULTIPLIER.get(side_key, params.atr_stop_multiple)
+    take_profit_multiple = EMPIRICAL_TAKE_PROFIT_MULTIPLIER.get(
+        side_key,
+        params.take_profit_multiple,
+    )
+    stop_distance = max(stop_multiple * atr, min_stop_distance)
+    take_profit_distance = max(take_profit_multiple * atr, min_stop_distance)
     target_volume = _volume_for_leverage(
         target_leverage,
         price=entry_price,

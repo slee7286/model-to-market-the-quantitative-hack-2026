@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from mt5_crypto_bot.analytics import (
+    AnalyticsConfig,
     AnalyticsError,
     AnalyticsReport,
     generate_analytics_report_from_store,
@@ -50,6 +51,8 @@ class ContinuousImprovementConfig:
     store_threshold_candidate: bool = True
     include_shadow_backtest: bool = True
     write_backtest_artifacts: bool = True
+    start_time_utc: datetime | None = None
+    end_time_utc: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -102,6 +105,10 @@ def run_continuous_improvement_from_store(
         analytics = generate_analytics_report_from_store(
             database_url,
             target_symbols=symbols,
+            config=AnalyticsConfig(
+                start_time_utc=improvement_config.start_time_utc,
+                end_time_utc=improvement_config.end_time_utc,
+            ),
             store_proposals=improvement_config.store_analytics_proposals,
             include_shadow_evaluation=improvement_config.include_shadow_backtest,
             now_utc=generated_at,
@@ -119,6 +126,8 @@ def run_continuous_improvement_from_store(
         target_symbols=symbols,
         current_entry_threshold=base_params.entry_threshold,
         current_exit_threshold=base_params.exit_threshold,
+        start_time_utc=improvement_config.start_time_utc,
+        end_time_utc=improvement_config.end_time_utc,
     )
     threshold_candidate = (
         _store_inactive_threshold_candidate(

@@ -38,7 +38,10 @@ PNL_SPRINT_ENTRY_SYMBOLS: tuple[str, ...] = ALLOWED_SYMBOLS
 DISCIPLINE_BALLAST_MAIN_SHARE = 0.89
 DISCIPLINE_BALLAST_MIN_TRIGGER_LEVERAGE = 1.0
 DISCIPLINE_BALLAST_MAX_TARGET_LEVERAGE = 3.25
-MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL = 250
+# Broker ``volume_max`` is an order-size limit, not a position-size limit. Keep
+# each cycle to a small burst of chunks so low-priced symbols such as XRP can
+# build exposure over time without flooding MT5 or the terminal.
+MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL = 10
 
 BROKER_STOP_DISTANCE_BUFFER_POINTS = 3.0
 

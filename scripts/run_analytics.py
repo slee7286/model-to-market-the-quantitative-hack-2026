@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -16,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
 from pydantic import ValidationError
 
 from mt5_crypto_bot.analytics import (
+    AnalyticsConfig,
     AnalyticsError,
     generate_analytics_report_from_store,
     write_analytics_reports,
@@ -67,6 +69,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Skip champion/challenger shadow backtest evaluation.",
     )
+    parser.add_argument(
+        "--start-utc",
+        default=None,
+        help="Optional inclusive UTC start time for session-window analytics.",
+    )
+    parser.add_argument(
+        "--end-utc",
+        default=None,
+        help="Optional inclusive UTC end time for session-window analytics.",
+    )
     return parser.parse_args(argv)
 
 
@@ -79,6 +91,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = generate_analytics_report_from_store(
             database_url,
             target_symbols=symbols,
+            config=AnalyticsConfig(
+                output_dir=args.output_dir,
+                start_time_utc=_parse_datetime_arg(args.start_utc),
+                end_time_utc=_parse_datetime_arg(args.end_utc),
+            ),
             store_proposals=not args.no_store_proposals,
             include_shadow_evaluation=not args.skip_shadow_evaluation,
         )
@@ -96,6 +113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("Offline analytics report completed.")
     print(f"Data label: {report.data_label}")
     print(f"Return: {report.metrics['return']:.6g}")
+    print(f"Window equity change: {report.metrics['window_equity_change']:.2f}")
+    print(f"Window return: {report.metrics['window_return']:.6g}")
     print(f"Max drawdown: {report.metrics['max_drawdown']:.6g}")
     print(f"15-minute Sharpe: {report.metrics['sharpe_15m']:.6g}")
     print(f"Trade count: {report.metrics['trade_count']}")
@@ -103,6 +122,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Markdown report: {paths['markdown']}")
     print(f"Metrics JSON: {paths['metrics_json']}")
     return 0
+
+
+def _parse_datetime_arg(value: str | None) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -61,6 +62,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Print the compact report summary as JSON.",
     )
+    parser.add_argument(
+        "--start-utc",
+        default=None,
+        help="Optional inclusive UTC start time for session-window improvement.",
+    )
+    parser.add_argument(
+        "--end-utc",
+        default=None,
+        help="Optional inclusive UTC end time for session-window improvement.",
+    )
     return parser.parse_args(argv)
 
 
@@ -80,6 +91,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 store_threshold_candidate=not args.no_store_proposals,
                 include_shadow_backtest=not args.skip_backtest,
                 write_backtest_artifacts=not args.skip_backtest,
+                start_time_utc=_parse_datetime_arg(args.start_utc),
+                end_time_utc=_parse_datetime_arg(args.end_utc),
             ),
         )
     except (ValidationError, ValueError) as exc:
@@ -101,6 +114,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("Safety: offline only; no MT5 connection, no order_check/order_send, no auto-promotion.")
     print(f"Data label: {report.data_label}")
     print(f"Return: {report.metrics.get('return'):.6g}")
+    print(f"Window equity change: {report.metrics.get('window_equity_change'):.2f}")
+    print(f"Window return: {report.metrics.get('window_return'):.6g}")
     print(f"Max drawdown: {report.metrics.get('max_drawdown'):.6g}")
     print(f"15-minute Sharpe: {report.metrics.get('sharpe_15m'):.6g}")
     print(f"Trade count: {report.metrics.get('trade_count')}")
@@ -118,6 +133,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Candidate env snippet: {report.paths['candidate_env']}")
     print(f"Summary JSON: {report.paths['summary_json']}")
     return 0
+
+
+def _parse_datetime_arg(value: str | None) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 if __name__ == "__main__":

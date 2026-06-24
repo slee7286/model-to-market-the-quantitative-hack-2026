@@ -10,7 +10,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mt5_crypto_bot.backtest import make_synthetic_fixture_market_data
-from mt5_crypto_bot.constants import DISCIPLINE_BALLAST_MAIN_SHARE
+from mt5_crypto_bot.constants import (
+    DISCIPLINE_BALLAST_MAIN_SHARE,
+    MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL,
+)
 from mt5_crypto_bot.schemas import OrderSide, SignalDecision, StrategyParams, SymbolConfig
 from mt5_crypto_bot.storage import SQLiteStore
 from mt5_crypto_bot.strategy import (
@@ -153,15 +156,17 @@ class StrategyEngineTests(unittest.TestCase):
             [feature_row(score_side="long")],
             context=StrategyContext(
                 symbol_metadata={"BTC/USD": metadata("BTC/USD")},
-                equity=1_000.0,
+                equity=10_000.0,
                 now_utc=NOW,
             ),
         )
 
         self.assertGreater(result.signals[0].target_volume or 0.0, 100.0)
         self.assertGreater(len(result.order_intents), 1)
+        self.assertLessEqual(len(result.order_intents), MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL)
         self.assertTrue(all(intent.requested_volume <= 100.0 for intent in result.order_intents))
         self.assertTrue(all(intent.metadata.get("chunked_order") for intent in result.order_intents))
+        self.assertTrue(all(intent.metadata.get("requested_notional") for intent in result.order_intents))
         submitted = sum(intent.requested_volume for intent in result.order_intents)
         self.assertLessEqual(submitted, result.signals[0].target_volume or 0.0)
 
@@ -237,6 +242,24 @@ class StrategyEngineTests(unittest.TestCase):
         intent = result.order_intents[0]
         self.assertAlmostEqual(intent.stop_loss or 0.0, (intent.requested_price or 0.0) - 4.0)
         self.assertAlmostEqual(intent.take_profit or 0.0, (intent.requested_price or 0.0) + 6.0)
+
+    def test_sol_long_uses_empirical_pnl_sprint_overlay(self) -> None:
+        result = self.engine.generate_signals(
+            [feature_row(symbol="SOL/USD", score_side="long")],
+            context=StrategyContext(
+                symbol_metadata={"SOL/USD": high_capacity_metadata("SOL/USD")},
+                now_utc=NOW,
+            ),
+        )
+
+        signal = result.signals[0]
+        intent = result.order_intents[0]
+        self.assertEqual(signal.decision, SignalDecision.ENTER)
+        self.assertEqual(signal.direction, "long")
+        self.assertGreaterEqual(signal.target_leverage, 6.0)
+        self.assertLessEqual(signal.target_leverage, 12.0)
+        self.assertAlmostEqual((intent.requested_price or 0.0) - (intent.stop_loss or 0.0), 3.6)
+        self.assertAlmostEqual((intent.take_profit or 0.0) - (intent.requested_price or 0.0), 8.0)
 
     def test_flat_signal_holds_without_order_intent(self) -> None:
         result = self.engine.generate_signals(
