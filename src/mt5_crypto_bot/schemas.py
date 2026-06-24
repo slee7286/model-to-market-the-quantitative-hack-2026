@@ -160,15 +160,16 @@ class StrategyParams(StrictBaseModel):
 
     strategy_version: str = DEFAULT_STRATEGY_VERSION
     signal_timeframe: str = "M5"
-    # 2026-06-23 PnL sprint update: local live-signal replay scored by
-    # return only favored 1.25 / 0.75 for the qualification window.
+    # 2026-06-24 finals update: local live-signal replay rejected lower entry
+    # thresholds after execution costs; use faster exits to reduce stale churn.
     entry_threshold: float = Field(default=1.25, gt=0)
-    exit_threshold: float = Field(default=0.75, ge=0)
+    exit_threshold: float = Field(default=0.15, ge=0)
     ema_fast: int = Field(default=20, gt=0)
     ema_slow: int = Field(default=80, gt=0)
     atr_period: int = Field(default=14, gt=0)
     atr_stop_multiple: float = Field(default=1.6, gt=0)
     take_profit_multiple: float = Field(default=2.4, gt=0)
+    dynamic_exit_levels: bool = True
     trailing_stop_multiple: float = Field(default=1.2, gt=0)
     time_stop_minutes: int = Field(default=180, gt=0)
     max_spread_bps_btc_eth: float = Field(default=8.0, gt=0)

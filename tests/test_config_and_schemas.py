@@ -38,7 +38,7 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(config.trade_mode, "dry_run")
         self.assertEqual(config.target_symbols, ALLOWED_SYMBOLS)
         self.assertEqual(config.entry_threshold, 1.25)
-        self.assertEqual(config.exit_threshold, 0.75)
+        self.assertEqual(config.exit_threshold, 0.15)
         self.assertEqual(config.max_gross_leverage, 28.0)
         self.assertEqual(config.max_symbol_leverage, 28.0)
         self.assertEqual(config.max_margin_usage, 0.90)
@@ -83,7 +83,11 @@ class ConfigValidationTests(unittest.TestCase):
 
     def test_strategy_threshold_overrides_flow_into_strategy_params(self) -> None:
         config = load_config(
-            env={"ENTRY_THRESHOLD": "0.75", "EXIT_THRESHOLD": "0.25"},
+            env={
+                "ENTRY_THRESHOLD": "0.75",
+                "EXIT_THRESHOLD": "0.25",
+                "DYNAMIC_EXIT_LEVELS": "false",
+            },
             env_file=None,
         )
 
@@ -91,6 +95,7 @@ class ConfigValidationTests(unittest.TestCase):
 
         self.assertEqual(params.entry_threshold, 0.75)
         self.assertEqual(params.exit_threshold, 0.25)
+        self.assertFalse(params.dynamic_exit_levels)
 
 
 class SchemaValidationTests(unittest.TestCase):
@@ -104,7 +109,8 @@ class SchemaValidationTests(unittest.TestCase):
         params = StrategyParams()
         self.assertEqual(params.strategy_version, "momo_v1")
         self.assertEqual(params.entry_threshold, 1.25)
-        self.assertEqual(params.exit_threshold, 0.75)
+        self.assertEqual(params.exit_threshold, 0.15)
+        self.assertTrue(params.dynamic_exit_levels)
         self.assertEqual(params.max_gross_leverage, 28.0)
         self.assertEqual(params.max_symbol_leverage, 28.0)
         self.assertEqual(params.max_margin_usage, 0.90)

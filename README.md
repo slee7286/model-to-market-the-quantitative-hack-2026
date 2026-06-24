@@ -490,7 +490,7 @@ Parameter proposals use only coarse grids around the frozen `momo_v1`
 parameters:
 
 - `entry_threshold`: `1.0`, `1.25`, `1.5`
-- `exit_threshold`: `0.25`, `0.35`, `0.5`, `0.75`
+- `exit_threshold`: `0.05`, `0.10`, `0.15`, `0.25`, `0.35`, `0.5`, `0.75`
 - `atr_stop_multiple`: `1.2`, `1.6`, `2.0`
 - `take_profit_multiple`: `1.8`, `2.4`, `3.0`
 
@@ -498,11 +498,12 @@ The proposal loop does not automatically increase `risk_per_trade`, gross
 leverage, symbol leverage, or margin usage. Proposed rows are stored in
 `strategy_versions` with `active=0`, no approver, and no approval timestamp.
 
-Current integrated live baseline is `ENTRY_THRESHOLD=1.25` and
-`EXIT_THRESHOLD=0.75`. The live sizing envelope is a 28x gross-leverage cap
-with a 90% margin-usage cap. All 13 FX/crypto instruments can open/add exposure
-when their signal, spread, liquidity, metadata, freshness, stop, margin, and
-risk checks pass. Live approval gates remain unchanged.
+Current finals live baseline is `ENTRY_THRESHOLD=1.25` and
+`EXIT_THRESHOLD=0.15` with `DYNAMIC_EXIT_LEVELS=true`. The live sizing envelope
+is a 28x gross-leverage cap with a 90% margin-usage cap. Fresh BAR and XRP
+entries are disabled, fresh SOL shorts are disabled, and near-cap sizing is
+reserved for strong same-direction signal alignment. Live approval gates remain
+unchanged.
 
 Manual approval workflow:
 

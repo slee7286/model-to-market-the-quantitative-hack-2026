@@ -30,6 +30,7 @@ ENV_FIELD_MAP: dict[str, str] = {
     "strategy_version": "STRATEGY_VERSION",
     "entry_threshold": "ENTRY_THRESHOLD",
     "exit_threshold": "EXIT_THRESHOLD",
+    "dynamic_exit_levels": "DYNAMIC_EXIT_LEVELS",
     "database_url": "DATABASE_URL",
     "postgres_uri": "POSTGRES_URI",
     "parquet_dir": "PARQUET_DIR",
@@ -70,10 +71,12 @@ class BotConfig(StrictBaseModel):
     bot_magic: int = Field(default=20260621, ge=0)
     strategy_version: str = DEFAULT_STRATEGY_VERSION
 
-    # PnL sprint tuning for the 2026-06-24 22:00 BST qualification cutoff.
-    # Stored live-signal replay scored by return only favored 1.25 / 0.75.
+    # Finals tuning for the 2026-06-24 22:00 BST to 2026-06-26 22:00 BST round.
+    # Return rank is ordinal, so the default posture favors cleaner confirmed
+    # entries over emergency turnover.
     entry_threshold: float = Field(default=1.25, gt=0)
-    exit_threshold: float = Field(default=0.75, ge=0)
+    exit_threshold: float = Field(default=0.15, ge=0)
+    dynamic_exit_levels: bool = True
 
     database_url: str = DEFAULT_DATABASE_URL
     postgres_uri: SecretStr | None = None
@@ -158,6 +161,7 @@ class BotConfig(StrictBaseModel):
             strategy_version=self.strategy_version,
             entry_threshold=self.entry_threshold,
             exit_threshold=self.exit_threshold,
+            dynamic_exit_levels=self.dynamic_exit_levels,
             max_gross_leverage=self.max_gross_leverage,
             max_symbol_leverage=self.max_symbol_leverage,
             max_margin_usage=self.max_margin_usage,

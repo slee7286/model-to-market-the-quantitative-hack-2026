@@ -121,12 +121,24 @@ class FeatureEngineeringTests(unittest.TestCase):
             "btc_regime",
             "beta_to_btc",
             "relative_score",
+            "asset_score_multiplier",
             "final_score_raw",
             "shadow_final_score",
         ):
             self.assertIn(column, features.columns)
         self.assertTrue(bool(latest["feature_warmup_complete"].all()))
         self.assertTrue(math.isfinite(float(latest["spread_bps"].dropna().iloc[0])))
+
+    def test_fx_final_score_uses_asset_specific_multiplier(self) -> None:
+        eur_bars = make_m5_bars("EUR/USD", base=1.08)
+        features = compute_feature_snapshots(eur_bars, target_symbols=("EUR/USD",))
+        latest = latest_feature_snapshots(features).iloc[0]
+
+        self.assertAlmostEqual(float(latest["asset_score_multiplier"]), 1.60)
+        self.assertAlmostEqual(
+            float(latest["final_score_raw"]),
+            float(latest["trend_score"]) * 1.60,
+        )
 
     def test_future_bar_changes_do_not_change_prior_features(self) -> None:
         bars = make_m5_bars("BTC/USD", base=10_000)

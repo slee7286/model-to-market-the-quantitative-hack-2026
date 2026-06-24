@@ -98,6 +98,7 @@ def recommend_thresholds_from_store(
     min_rows: int = MIN_RECOMMENDATION_ROWS,
     start_time_utc: datetime | None = None,
     end_time_utc: datetime | None = None,
+    allow_lower_entry_threshold: bool = False,
 ) -> ThresholdRecommendation:
     """Recommend thresholds from stored signal scores and next-bar M5 returns.
 
@@ -158,19 +159,36 @@ def recommend_thresholds_from_store(
             evaluated_rows=len(frame),
         )
 
+    selected = best
+    reason = (
+        "offline recommendation only; update ENTRY_THRESHOLD/EXIT_THRESHOLD "
+        "after human review and validation"
+    )
+    if (
+        not allow_lower_entry_threshold
+        and selected.entry_threshold + EPSILON < float(current_entry_threshold)
+    ):
+        guarded_candidates = [
+            item
+            for item in evaluations
+            if item.entry_threshold + EPSILON >= float(current_entry_threshold)
+        ]
+        selected = guarded_candidates[0] if guarded_candidates else current or best
+        reason = (
+            "offline guard rejected a lower ENTRY_THRESHOLD recommendation to avoid "
+            "increasing turnover after live execution costs; review top diagnostics manually"
+        )
+
     return ThresholdRecommendation(
         current_entry_threshold=float(current_entry_threshold),
         current_exit_threshold=float(current_exit_threshold),
-        recommended_entry_threshold=best.entry_threshold,
-        recommended_exit_threshold=best.exit_threshold,
+        recommended_entry_threshold=selected.entry_threshold,
+        recommended_exit_threshold=selected.exit_threshold,
         available=True,
-        reason=(
-            "offline recommendation only; update ENTRY_THRESHOLD/EXIT_THRESHOLD "
-            "after human review and validation"
-        ),
+        reason=reason,
         evaluated_rows=len(frame),
         evaluated_pairs=len(evaluations),
-        best=best,
+        best=selected,
         current=current,
         top=evaluations[:5],
     )

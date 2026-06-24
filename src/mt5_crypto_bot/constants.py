@@ -39,9 +39,14 @@ DISCIPLINE_BALLAST_MAIN_SHARE = 0.89
 DISCIPLINE_BALLAST_MIN_TRIGGER_LEVERAGE = 1.0
 DISCIPLINE_BALLAST_MAX_TARGET_LEVERAGE = 3.25
 # Broker ``volume_max`` is an order-size limit, not a position-size limit. Keep
-# each cycle to a small burst of chunks so low-priced symbols such as XRP can
-# build exposure over time without flooding MT5 or the terminal.
-MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL = 10
+# each cycle to a bounded burst of chunks so recovery-sprint positions can
+# build quickly without flooding MT5, the terminal, or the audit log.
+MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL = 16
+
+# FX moves are lower-volatility and normally produce smaller absolute momentum
+# scores than crypto in this shared signal stack. Scale only the FX trend score
+# so the global entry threshold can remain unchanged for the rest of the bot.
+FX_MOMENTUM_SCORE_MULTIPLIER = 1.60
 
 BROKER_STOP_DISTANCE_BUFFER_POINTS = 3.0
 

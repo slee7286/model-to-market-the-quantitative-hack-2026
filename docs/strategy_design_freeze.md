@@ -6,11 +6,15 @@ This document originally froze the first code-ready strategy specification for t
 
 Current status update: the strategy described here has since been implemented through dry-run execution and offline analytics, and a separate guarded live runner now exists. The freeze itself remains the source for `momo_v1` strategy/risk intent. Any live session must still use `scripts/run_bot_live.py` with `LIVE_APPROVED=true` and `config/LIVE_APPROVED.json`; unattended automation must not create those gates or place live orders.
 
-Integrated FX/crypto update on 2026-06-23: the active `momo_v1` build now runs one synchronous session across 13 instruments: `AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`, `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. Metals are allowed by `rules.md` but intentionally excluded from this implementation. Active thresholds remain `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.75`; all 13 instruments are eligible for fresh entries when data, spread, metadata, stop, liquidity, margin, and risk gates pass. FX pairs use time-series trend/momentum only; crypto alts may still use BTC-relative strength and BTC regime gates. The operational gross-leverage cap is `28.0x`, while the `90%` margin-usage guard can still become the binding limit before 28x on a 30x account.
+Integrated FX/crypto update on 2026-06-23: the active `momo_v1` build now runs one synchronous session across 13 instruments: `AUD/USD`, `EUR/CHF`, `EUR/GBP`, `EUR/USD`, `GBP/USD`, `USD/CAD`, `USD/CHF`, `USD/JPY`, `BAR/USD`, `BTC/USD`, `ETH/USD`, `SOL/USD`, and `XRP/USD`. Metals are allowed by `rules.md` but intentionally excluded from this implementation. FX pairs use time-series trend/momentum only; crypto alts may still use BTC-relative strength and BTC regime gates. The operational gross-leverage cap is `28.0x`, while the `90%` margin-usage guard can still become the binding limit before 28x on a 30x account.
 
 Discipline-ballast update on 2026-06-23: when exactly one high-conviction fresh entry appears, the strategy may preserve the same total intended gross exposure but split it into an approximately `89%` main leg and `11%` opposite-direction ballast leg in the lowest-spread eligible companion symbol. This is not a new alpha signal; it is a rules-discipline mechanism to reduce prolonged single-instrument and net-direction exposure while staying under the gross-leverage and margin-usage guards. Tagged ballast orders still require fresh data, symbol metadata, spread checks, stop checks, `order_check`, kill switch clearance, and risk approval.
 
 Volume-limit update on 2026-06-23: `volume_max` must be interpreted as a maximum per submitted order, not a maximum total position. The collector must store broker-reported metadata without a hardcoded `100.0` override. Strategy target sizing may exceed 100 units when leverage math requires it; oversized adds or closes are split into order-intent chunks capped at the per-order `volume_max`.
+
+Finals update on 2026-06-24: the final score is rank-based, with return rank worth 70%, drawdown rank 15%, Sharpe rank 10%, and risk discipline 5%. The active finals profile therefore targets high but controlled return rank rather than all-or-nothing PnL. Active thresholds are `ENTRY_THRESHOLD=1.25` and `EXIT_THRESHOLD=0.15`, with `DYNAMIC_EXIT_LEVELS=true`. Fresh BAR and XRP entries are disabled, and fresh SOL shorts are disabled. BTC/ETH trend exposure and an aligned USD-long FX basket receive the primary risk budget; SOL-long is tertiary and capped. Isolated fresh signals are capped below the top leverage band, while at least two strong same-direction candidates can scale toward the upper operating band. Every live order still requires fresh MT5 ticks, confirmed symbols, stop/TP validation, risk approval, `order_check`, margin checks, leverage checks, and the live approval gates.
+
+Dynamic exit-level update on 2026-06-24: `DYNAMIC_EXIT_LEVELS=true` lets the strategy adjust stop-loss and take-profit ATR multiples at entry time from score strength, EMA slope, Donchian alignment, volume confirmation, spread ratio, and realized-volatility ratio. The dynamic profile is intentionally asymmetric: it may expand take-profit in favorable low-spread trend conditions, and it may tighten stops in stressed spread/volatility conditions, but it does not widen stop-loss distance. Every selected multiple and reason is stored in signal/order metadata for auditability, and MT5 `order_check` still validates the resulting prices before live submission.
 
 The active strategy is constrained to the following FX/crypto instruments only:
 
@@ -106,9 +110,9 @@ Crypto keeps the BTC-relative/regime structure from the original MVP:
 | --- | --- | --- | --- |
 | `BTC/USD` | Regime anchor and core instrument | Trade own trend both long and short. Use as market state for all alts. | Highest liquidity assumption, no low per-symbol clamp, spread cap `8 bps`. |
 | `ETH/USD` | Liquid high-beta core alt | Trade momentum when own signal confirms or relative strength is strong. | No low per-symbol clamp; reduce stacking only through gross leverage, margin, freshness, and spread gates. |
-| `SOL/USD` | Higher-beta momentum sleeve | Trade only with no strong opposing BTC regime. | No low per-symbol clamp, spread cap `15 bps`, shock filter. |
-| `XRP/USD` | Event-sensitive alt | Trade momentum when own signal and BTC conflict gate pass. | Spread cap `15 bps`, shock filter. |
-| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | Trade momentum when own signal and BTC conflict gate pass. | Wider spread cap `25 bps`; verify broker mapping carefully. |
+| `SOL/USD` | Tertiary high-beta momentum sleeve | Fresh longs only when no strong opposing BTC regime; fresh shorts disabled. | Tight finals cap, spread cap `15 bps`, shock filter. |
+| `XRP/USD` | Event-sensitive alt | No fresh finals entries after negative local attribution. | Existing exposure may still be reduced or exited when state is reliable. |
+| `BAR/USD` | HBAR/Hedera idiosyncratic sleeve | No fresh finals entries after negative local attribution. | Existing exposure may still be reduced or exited; verify broker mapping carefully. |
 
 ## Timeframes And Cadence
 
@@ -392,7 +396,7 @@ These caps are now leaderboard-aggressive but remain bounded by `rules.md`: marg
 | Single-instrument share target | Opportunistic | Track time above `90%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
 | Net directional exposure target | Opportunistic | Track time above `95%`; block added exposure after the soft window | `rules.md` penalty is time-based, not instantaneous. |
 | Max open positions | 13 | One position per active FX/crypto symbol | Prevents duplicated exposure. |
-| Drawdown optimization | Disabled for qualification sprint | Drawdown alone does not block new entries | Return rank is the active priority before the finals reset. |
+| Drawdown optimization | Secondary to return rank | Drawdown alone does not block new entries, but position scaling stays below red-line leverage/margin bands | Return rank is 70% of the final score, while drawdown and Sharpe together still contribute 25%. |
 | Kill switch | Local flag or config state | Block entries and allow reductions only | Manual safety override. |
 
 Symbol leverage caps:
@@ -407,11 +411,11 @@ Symbol leverage caps:
 | `USD/CAD` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
 | `USD/CHF` | `28.00x` | `28.00x` | FX sleeve, bounded by portfolio/margin gates. |
 | `USD/JPY` | `28.00x` | `28.00x` | Core FX liquidity sleeve. |
-| `BTC/USD` | `27.00x` | `27.00x` | Anchor and likely best liquidity. |
-| `ETH/USD` | `27.00x` | `27.00x` | Core alt, correlated with BTC. |
-| `SOL/USD` | `27.00x` | `27.00x` | Higher beta, still filtered by spread/shock gates. |
-| `XRP/USD` | `27.00x` | `27.00x` | Jump/event risk, still filtered by shock gate. |
-| `BAR/USD` | `27.00x` | `27.00x` | Allowed but must pass metadata, spread, and freshness gates. |
+| `BTC/USD` | `27.00x` | `27.00x` | Anchor and likely best liquidity; long direction gets the strongest finals overlay. |
+| `ETH/USD` | `27.00x` | `27.00x` | Core alt, correlated with BTC; long direction gets the secondary finals overlay. |
+| `SOL/USD` | `27.00x` | `27.00x` | Tertiary long-only sleeve in finals; empirical directional cap is lower than the symbol cap. |
+| `XRP/USD` | `27.00x` | `27.00x` | Fresh finals entries disabled after negative attribution. |
+| `BAR/USD` | `27.00x` | `27.00x` | Fresh finals entries disabled after negative attribution. |
 
 ## Candidate Strategies For Shadow Mode Only
 

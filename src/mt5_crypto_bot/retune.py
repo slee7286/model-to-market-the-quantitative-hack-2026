@@ -23,7 +23,7 @@ class CoarseGrid:
     """Small retuning grid from the research/design freeze."""
 
     entry_thresholds: tuple[float, ...] = (1.0, 1.25, 1.5)
-    exit_thresholds: tuple[float, ...] = (0.25, 0.35, 0.5, 0.75)
+    exit_thresholds: tuple[float, ...] = (0.05, 0.10, 0.15, 0.25, 0.35, 0.50, 0.75)
     atr_stop_multiples: tuple[float, ...] = (1.2, 1.6, 2.0)
     take_profit_multiples: tuple[float, ...] = (1.8, 2.4, 3.0)
     max_proposals: int = 6

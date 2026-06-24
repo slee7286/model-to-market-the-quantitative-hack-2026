@@ -201,18 +201,74 @@ class StrategyEngineTests(unittest.TestCase):
             places=2,
         )
 
-    def test_xrp_entries_are_enabled_in_integrated_sprint(self) -> None:
+    def test_xrp_entries_are_disabled_for_finals_attribution(self) -> None:
+        for side in ("long", "short"):
+            with self.subTest(side=side):
+                result = self.engine.generate_signals(
+                    [feature_row(symbol="XRP/USD", score_side=side)],
+                    context=StrategyContext(
+                        symbol_metadata={"XRP/USD": high_capacity_metadata("XRP/USD")},
+                        now_utc=NOW,
+                    ),
+                )
+
+                self.assertEqual(result.signals[0].decision, SignalDecision.BLOCK)
+                self.assertIn("finals attribution", result.signals[0].reason or "")
+                self.assertEqual(result.order_intents, ())
+
+    def test_bar_entries_are_disabled_for_finals_attribution(self) -> None:
+        for side in ("long", "short"):
+            with self.subTest(side=side):
+                result = self.engine.generate_signals(
+                    [feature_row(symbol="BAR/USD", score_side=side)],
+                    context=StrategyContext(
+                        symbol_metadata={"BAR/USD": high_capacity_metadata("BAR/USD")},
+                        now_utc=NOW,
+                    ),
+                )
+
+                self.assertEqual(result.signals[0].decision, SignalDecision.BLOCK)
+                self.assertIn("finals attribution", result.signals[0].reason or "")
+                self.assertEqual(result.order_intents, ())
+
+    def test_sol_short_entries_are_disabled_for_finals_attribution(self) -> None:
         result = self.engine.generate_signals(
-            [feature_row(symbol="XRP/USD", score_side="short")],
+            [feature_row(symbol="SOL/USD", score_side="short")],
             context=StrategyContext(
-                symbol_metadata={"XRP/USD": high_capacity_metadata("XRP/USD")},
+                symbol_metadata={"SOL/USD": high_capacity_metadata("SOL/USD")},
                 now_utc=NOW,
             ),
         )
 
-        self.assertEqual(result.signals[0].decision, SignalDecision.ENTER)
-        self.assertEqual(result.signals[0].direction, "short")
-        self.assertEqual(len(result.order_intents), 1)
+        self.assertEqual(result.signals[0].decision, SignalDecision.BLOCK)
+        self.assertIn("finals attribution", result.signals[0].reason or "")
+        self.assertEqual(result.order_intents, ())
+
+    def test_ballast_prefers_forex_and_avoids_blocked_alt_shorts(self) -> None:
+        result = self.engine.generate_signals(
+            [
+                feature_row(symbol="BTC/USD", score_side="long"),
+                feature_row(symbol="BAR/USD", score_side="flat", spread_bps=0.1),
+                feature_row(symbol="XRP/USD", score_side="flat", spread_bps=0.2),
+                feature_row(symbol="ETH/USD", score_side="flat", spread_bps=0.3),
+                feature_row(symbol="EUR/USD", score_side="flat", spread_bps=1.0),
+            ],
+            context=StrategyContext(
+                symbol_metadata={
+                    "BTC/USD": high_capacity_metadata("BTC/USD"),
+                    "BAR/USD": high_capacity_metadata("BAR/USD"),
+                    "XRP/USD": high_capacity_metadata("XRP/USD"),
+                    "ETH/USD": high_capacity_metadata("ETH/USD"),
+                    "EUR/USD": high_capacity_metadata("EUR/USD"),
+                },
+                now_utc=NOW,
+            ),
+        )
+
+        self.assertEqual(len(result.order_intents), 2)
+        self.assertEqual(result.order_intents[0].symbol, "EUR/USD")
+        self.assertEqual(result.order_intents[0].side, OrderSide.SELL)
+        self.assertTrue(result.order_intents[0].metadata.get("discipline_ballast"))
 
     def test_forex_entry_uses_own_trend_without_btc_regime(self) -> None:
         row = feature_row(symbol="EUR/USD", score_side="long", spread_bps=1.0)
@@ -230,21 +286,59 @@ class StrategyEngineTests(unittest.TestCase):
         self.assertEqual(result.signals[0].direction, "long")
         self.assertEqual(result.order_intents[0].symbol, "EUR/USD")
 
+    def test_forex_momentum_score_is_scaled_for_lower_volatility_pairs(self) -> None:
+        row = feature_row(symbol="EUR/USD", score_side="flat", spread_bps=1.0)
+        row.update(
+            {
+                "close": 101.0,
+                "ema_80": 100.0,
+                "ema20_slope_6_over_atr": 0.2,
+                "z_ret_3_m5": 1.05,
+                "z_ret_12_m5": 1.05,
+                "z_ema20_minus_ema80_over_atr": 1.05,
+                "donchian_ensemble": 1.0,
+                "z_ema20_slope_6_over_atr": 1.05,
+                "volume_zscore": 1.0,
+                "final_score_raw": 1.04,
+            }
+        )
+
+        result = self.engine.generate_signals(
+            [row],
+            context=StrategyContext(
+                symbol_metadata={"EUR/USD": high_capacity_metadata("EUR/USD")},
+                now_utc=NOW,
+            ),
+        )
+
+        self.assertEqual(result.signals[0].decision, SignalDecision.ENTER)
+        self.assertGreater(result.signals[0].score, 1.25)
+        self.assertAlmostEqual(result.signals[0].features["asset_score_multiplier"], 1.60)
+        self.assertEqual(result.order_intents[0].symbol, "EUR/USD")
+
     def test_strategy_params_control_stop_and_take_profit_distance(self) -> None:
         engine = DryRunStrategyEngine(
-            StrategyParams(atr_stop_multiple=2.0, take_profit_multiple=3.0)
+            StrategyParams(
+                atr_stop_multiple=2.0,
+                take_profit_multiple=3.0,
+                dynamic_exit_levels=False,
+            )
         )
         result = engine.generate_signals(
-            [feature_row(score_side="long")],
-            context=self.context(),
+            [feature_row(symbol="EUR/USD", score_side="long", spread_bps=1.0)],
+            context=StrategyContext(
+                symbol_metadata={"EUR/USD": high_capacity_metadata("EUR/USD")},
+                now_utc=NOW,
+            ),
         )
 
         intent = result.order_intents[0]
         self.assertAlmostEqual(intent.stop_loss or 0.0, (intent.requested_price or 0.0) - 4.0)
         self.assertAlmostEqual(intent.take_profit or 0.0, (intent.requested_price or 0.0) + 6.0)
 
-    def test_sol_long_uses_empirical_pnl_sprint_overlay(self) -> None:
-        result = self.engine.generate_signals(
+    def test_sol_long_is_tertiary_finals_exposure(self) -> None:
+        engine = DryRunStrategyEngine(StrategyParams(dynamic_exit_levels=False))
+        result = engine.generate_signals(
             [feature_row(symbol="SOL/USD", score_side="long")],
             context=StrategyContext(
                 symbol_metadata={"SOL/USD": high_capacity_metadata("SOL/USD")},
@@ -257,9 +351,76 @@ class StrategyEngineTests(unittest.TestCase):
         self.assertEqual(signal.decision, SignalDecision.ENTER)
         self.assertEqual(signal.direction, "long")
         self.assertGreaterEqual(signal.target_leverage, 6.0)
-        self.assertLessEqual(signal.target_leverage, 12.0)
-        self.assertAlmostEqual((intent.requested_price or 0.0) - (intent.stop_loss or 0.0), 3.6)
-        self.assertAlmostEqual((intent.take_profit or 0.0) - (intent.requested_price or 0.0), 8.0)
+        self.assertLessEqual(signal.target_leverage, 10.0)
+        self.assertAlmostEqual((intent.requested_price or 0.0) - (intent.stop_loss or 0.0), 3.0)
+        self.assertAlmostEqual((intent.take_profit or 0.0) - (intent.requested_price or 0.0), 6.4)
+
+    def test_dynamic_exit_levels_extend_take_profit_for_favorable_trend(self) -> None:
+        result = self.engine.generate_signals(
+            [feature_row(symbol="BTC/USD", score_side="long", spread_bps=1.0)],
+            context=StrategyContext(
+                symbol_metadata={"BTC/USD": high_capacity_metadata("BTC/USD")},
+                now_utc=NOW,
+            ),
+        )
+
+        intent = result.order_intents[0]
+        requested_price = intent.requested_price or 0.0
+        stop_distance = requested_price - (intent.stop_loss or 0.0)
+        take_profit_distance = (intent.take_profit or 0.0) - requested_price
+        self.assertAlmostEqual(stop_distance, 3.4)
+        self.assertGreater(take_profit_distance, 7.0)
+        self.assertTrue(intent.metadata.get("dynamic_exit_levels"))
+        self.assertIn("strong aligned score", intent.metadata.get("exit_level_reason") or "")
+
+    def test_btc_short_finals_overlay_sizes_without_single_signal_overreach(self) -> None:
+        result = self.engine.generate_signals(
+            [feature_row(symbol="BTC/USD", score_side="short")],
+            context=StrategyContext(
+                symbol_metadata={"BTC/USD": high_capacity_metadata("BTC/USD")},
+                now_utc=NOW,
+            ),
+        )
+
+        signal = result.signals[0]
+        self.assertEqual(signal.decision, SignalDecision.ENTER)
+        self.assertEqual(signal.direction, "short")
+        self.assertGreaterEqual(signal.target_leverage, 10.0)
+        self.assertLessEqual(signal.target_leverage, 24.0)
+
+    def test_aligned_finals_candidates_can_use_near_cap_sizing(self) -> None:
+        btc_row = feature_row(symbol="BTC/USD", score_side="long")
+        eth_row = feature_row(symbol="ETH/USD", score_side="long")
+        for row in (btc_row, eth_row):
+            row.update(
+                {
+                    "z_ret_3_m5": 3.0,
+                    "z_ret_12_m5": 3.0,
+                    "z_ema20_minus_ema80_over_atr": 3.0,
+                    "z_ema20_slope_6_over_atr": 3.0,
+                    "final_score_raw": 3.0,
+                }
+            )
+        result = self.engine.generate_signals(
+            [btc_row, eth_row],
+            context=StrategyContext(
+                symbol_metadata={
+                    "BTC/USD": high_capacity_metadata("BTC/USD"),
+                    "ETH/USD": high_capacity_metadata("ETH/USD"),
+                },
+                now_utc=NOW,
+            ),
+        )
+
+        targets = {
+            signal.symbol: signal.target_leverage
+            for signal in result.signals
+            if signal.decision == SignalDecision.ENTER
+        }
+        self.assertGreaterEqual(targets["BTC/USD"], 26.0)
+        self.assertGreaterEqual(targets["ETH/USD"], 26.0)
+        self.assertLessEqual(targets["BTC/USD"], 27.5)
+        self.assertLessEqual(targets["ETH/USD"], 27.5)
 
     def test_flat_signal_holds_without_order_intent(self) -> None:
         result = self.engine.generate_signals(

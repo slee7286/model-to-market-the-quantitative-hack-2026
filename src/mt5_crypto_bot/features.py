@@ -17,7 +17,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from mt5_crypto_bot.constants import ALLOWED_SYMBOLS, CRYPTO_SYMBOLS, DEFAULT_DATABASE_URL
+from mt5_crypto_bot.constants import (
+    ALLOWED_SYMBOLS,
+    CRYPTO_SYMBOLS,
+    DEFAULT_DATABASE_URL,
+    FOREX_SYMBOLS,
+    FX_MOMENTUM_SCORE_MULTIPLIER,
+)
 from mt5_crypto_bot.schemas import normalize_symbol, normalize_symbols
 from mt5_crypto_bot.storage import SQLiteStore, parse_sqlite_path
 
@@ -733,11 +739,17 @@ def _compute_final_scores(features: pd.DataFrame, config: FeatureConfig) -> pd.D
         default=0.0,
     )
     output["trend_score"] = score_base + 0.05 * output["volume_confirmation"]
+    output["asset_score_multiplier"] = np.where(
+        output["symbol"].isin(set(FOREX_SYMBOLS)),
+        FX_MOMENTUM_SCORE_MULTIPLIER,
+        1.0,
+    )
+    asset_trend_score = output["trend_score"] * output["asset_score_multiplier"]
     crypto_relative_symbols = set(CRYPTO_SYMBOLS) - {BTC_SYMBOL}
     output["final_score_raw"] = np.where(
         output["symbol"].isin(crypto_relative_symbols),
         0.75 * output["trend_score"] + 0.25 * output["relative_score"].fillna(0.0),
-        output["trend_score"],
+        asset_trend_score,
     )
     output["shadow_final_score"] = _book_adjusted_score(
         output["final_score_raw"],
@@ -837,6 +849,7 @@ def _finalize_feature_frame(features: pd.DataFrame) -> pd.DataFrame:
         "relative_score",
         "trend_score_pre_volume",
         "trend_score",
+        "asset_score_multiplier",
         "final_score_raw",
         "shadow_final_score",
         "cross_sectional_rank",

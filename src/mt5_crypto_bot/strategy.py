@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,7 @@ from mt5_crypto_bot.constants import (
     DISCIPLINE_BALLAST_MAIN_SHARE,
     DISCIPLINE_BALLAST_MIN_TRIGGER_LEVERAGE,
     FOREX_SYMBOLS,
+    FX_MOMENTUM_SCORE_MULTIPLIER,
     MAX_ORDER_INTENT_CHUNKS_PER_SIGNAL,
     PNL_SPRINT_ENTRY_SYMBOLS,
 )
@@ -121,39 +122,102 @@ VOLATILITY_FLOOR: dict[str, float] = {
     "XRP/USD": 0.0035,
 }
 
-# Empirical PnL-sprint overlay from the public leaderboard/profile point and
-# local post-2026-06-23 22:30 UTC DB window: SOL long carried the profitable
-# run, while XRP/BTC were mostly ballast/closeout noise. These multipliers
-# increase conviction sizing without changing rules-level risk caps.
+# Finals overlay from the public leaderboard/profile point, current final-score
+# formula, and local 2026-06-24 execution attribution. BTC/ETH trend exposure
+# carried local PnL; BAR/XRP churn did not. Several high-ranking peers also used
+# USD-long FX baskets. These multipliers shift risk budget without changing the
+# rules-level risk caps enforced by the risk engine.
 EMPIRICAL_DIRECTIONAL_LEVERAGE_MULTIPLIER: dict[tuple[str, str], float] = {
-    ("SOL/USD", "long"): 4.5,
+    ("AUD/USD", "short"): 1.10,
+    ("EUR/USD", "short"): 1.10,
+    ("GBP/USD", "short"): 1.10,
+    ("USD/CAD", "long"): 1.10,
+    ("USD/CHF", "long"): 1.10,
+    ("USD/JPY", "long"): 1.10,
+    ("EUR/CHF", "long"): 0.80,
+    ("EUR/CHF", "short"): 0.80,
+    ("EUR/GBP", "long"): 0.80,
+    ("EUR/GBP", "short"): 0.80,
+    ("BTC/USD", "long"): 1.15,
+    ("BTC/USD", "short"): 0.75,
+    ("ETH/USD", "long"): 1.10,
+    ("ETH/USD", "short"): 0.80,
+    ("SOL/USD", "long"): 0.60,
     ("SOL/USD", "short"): 0.50,
-    ("BTC/USD", "long"): 1.50,
-    ("BTC/USD", "short"): 0.50,
-    ("XRP/USD", "long"): 0.75,
-    ("XRP/USD", "short"): 0.25,
 }
 
 EMPIRICAL_DIRECTIONAL_LEVERAGE_FLOOR: dict[tuple[str, str], float] = {
-    ("SOL/USD", "long"): 6.0,
+    ("BTC/USD", "long"): 8.0,
+    ("BTC/USD", "short"): 6.0,
+    ("ETH/USD", "long"): 8.0,
+    ("ETH/USD", "short"): 6.0,
 }
 
 EMPIRICAL_DIRECTIONAL_LEVERAGE_CAP: dict[tuple[str, str], float] = {
-    ("SOL/USD", "long"): 12.0,
+    ("AUD/USD", "short"): 27.5,
+    ("EUR/USD", "short"): 27.5,
+    ("GBP/USD", "short"): 27.5,
+    ("USD/CAD", "long"): 27.5,
+    ("USD/CHF", "long"): 27.5,
+    ("USD/JPY", "long"): 27.5,
+    ("EUR/CHF", "long"): 18.0,
+    ("EUR/CHF", "short"): 18.0,
+    ("EUR/GBP", "long"): 18.0,
+    ("EUR/GBP", "short"): 18.0,
+    ("BTC/USD", "long"): 27.5,
+    ("BTC/USD", "short"): 24.0,
+    ("ETH/USD", "long"): 27.5,
+    ("ETH/USD", "short"): 22.0,
+    ("SOL/USD", "long"): 10.0,
     ("SOL/USD", "short"): 3.0,
-    ("BTC/USD", "long"): 6.0,
-    ("BTC/USD", "short"): 3.0,
-    ("XRP/USD", "long"): 2.0,
-    ("XRP/USD", "short"): 1.0,
+}
+
+# Finals attribution showed losses were concentrated in repeated BAR and XRP
+# churn plus SOL short exposure. Existing positions may still be reduced/exited,
+# but these directions should not add fresh risk.
+EMPIRICAL_DIRECTION_BLOCK_REASONS: dict[tuple[str, str], str] = {
+    ("BAR/USD", "long"): "block: finals attribution disables fresh BAR entries",
+    ("BAR/USD", "short"): "block: finals attribution disables fresh BAR entries",
+    ("XRP/USD", "long"): "block: finals attribution disables fresh XRP entries",
+    ("XRP/USD", "short"): "block: finals attribution disables fresh XRP entries",
+    ("SOL/USD", "short"): "block: finals attribution disables fresh SOL shorts",
+}
+
+# Ballast is a risk-discipline helper, not an alpha signal. Prefer liquid FX
+# when it is fresh and eligible, then core crypto. Avoid the noisy alt sleeves
+# unless they are the only allowed, non-blocked choice.
+BALLAST_SYMBOL_PRIORITY: dict[str, int] = {
+    **{symbol: 0 for symbol in FOREX_SYMBOLS},
+    "BTC/USD": 1,
+    "ETH/USD": 2,
+    "SOL/USD": 3,
+    "XRP/USD": 4,
+    "BAR/USD": 5,
 }
 
 EMPIRICAL_TAKE_PROFIT_MULTIPLIER: dict[tuple[str, str], float] = {
-    ("SOL/USD", "long"): 4.0,
+    ("BTC/USD", "long"): 3.5,
+    ("BTC/USD", "short"): 2.8,
+    ("ETH/USD", "long"): 3.5,
+    ("ETH/USD", "short"): 2.8,
+    ("SOL/USD", "long"): 3.2,
 }
 
 EMPIRICAL_STOP_MULTIPLIER: dict[tuple[str, str], float] = {
-    ("SOL/USD", "long"): 1.8,
+    ("BTC/USD", "long"): 1.7,
+    ("BTC/USD", "short"): 1.5,
+    ("ETH/USD", "long"): 1.7,
+    ("ETH/USD", "short"): 1.5,
+    ("SOL/USD", "long"): 1.5,
 }
+
+FINALS_SCORE_RAMP = 0.85
+FINALS_BASE_TARGET_FRACTION = 0.50
+FINALS_STRONG_TARGET_FRACTION = 0.86
+FINALS_SINGLE_SIGNAL_LEVERAGE_CAP = 24.0
+FINALS_SPRINT_MIN_ALIGNED_CANDIDATES = 2
+FINALS_SPRINT_SCORE_SCALE = 0.80
+FINALS_SPRINT_LEVERAGE_CAP = 27.5
 
 REQUIRED_METADATA_FIELDS: tuple[str, ...] = (
     "broker_symbol",
@@ -185,6 +249,8 @@ class StrategyContext:
     max_drawdown: float = 0.0
     now_utc: datetime | None = None
     enforce_freshness: bool = True
+    total_entry_candidates: int = 0
+    aligned_entry_candidates: int = 0
 
 
 @dataclass(frozen=True)
@@ -258,6 +324,11 @@ class DryRunStrategyEngine:
             return StrategyCycleResult((), (), 0, 0)
 
         strategy_context = context or StrategyContext()
+        strategy_context = _context_with_candidate_alignment(
+            frame,
+            strategy_context,
+            self.params,
+        )
         signals: list[Signal] = []
         order_intents: list[OrderIntent] = []
         rows: list[dict[str, Any]] = []
@@ -425,6 +496,23 @@ class DryRunStrategyEngine:
             )
             return signal, None
 
+        empirical_block = _empirical_direction_block_reason(symbol, candidate_side)
+        if empirical_block is not None:
+            signal = self._signal(
+                symbol=symbol,
+                now_utc=now,
+                feature_time=feature_time,
+                direction=Direction.FLAT,
+                score=score,
+                target_leverage=0.0,
+                target_volume=None,
+                target_price=None,
+                features=feature_payload,
+                decision=SignalDecision.BLOCK,
+                reason=empirical_block,
+            )
+            return signal, None
+
         entry_block = _entry_block_reason(data, symbol, candidate_side)
         if entry_block is not None:
             signal = self._signal(
@@ -449,6 +537,7 @@ class DryRunStrategyEngine:
             rv_1h_equiv=_as_optional_float(data.get("rv_1h_equiv")),
             params=self.params,
             max_drawdown=strategy_context.max_drawdown,
+            aligned_entry_candidates=strategy_context.aligned_entry_candidates,
         )
         if target_leverage <= EPSILON:
             signal = self._signal(
@@ -510,6 +599,8 @@ class DryRunStrategyEngine:
             )
             return signal, None
 
+        entry_features = dict(feature_payload)
+        entry_features.update(_sizing_feature_payload(sizing))
         signal = self._signal(
             symbol=symbol,
             now_utc=now,
@@ -519,7 +610,7 @@ class DryRunStrategyEngine:
             target_leverage=target_leverage,
             target_volume=sizing.target_volume,
             target_price=sizing.entry_price,
-            features=feature_payload,
+            features=entry_features,
             decision=SignalDecision.ENTER,
             reason=f"{candidate_side.value} entry/resize",
         )
@@ -576,10 +667,17 @@ class DryRunStrategyEngine:
         if main_row is None or main_metadata is None:
             return signals, order_intents
 
+        main_direction = (
+            Direction.LONG
+            if _enum_value(main_signal.direction) == Direction.LONG.value
+            else Direction.SHORT
+        )
+        ballast_direction = Direction.SHORT if main_direction == Direction.LONG else Direction.LONG
         ballast_symbol = _choose_ballast_symbol(
             rows=row_by_symbol,
             context=context,
             excluded_symbol=main_signal.symbol,
+            ballast_direction=ballast_direction,
         )
         if ballast_symbol is None:
             return signals, order_intents
@@ -588,12 +686,9 @@ class DryRunStrategyEngine:
         if ballast_metadata is None:
             return signals, order_intents
 
-        main_direction = (
-            Direction.LONG
-            if _enum_value(main_signal.direction) == Direction.LONG.value
-            else Direction.SHORT
-        )
-        ballast_direction = Direction.SHORT if main_direction == Direction.LONG else Direction.LONG
+        if _empirical_direction_block_reason(ballast_symbol, ballast_direction) is not None:
+            return signals, order_intents
+
         now = _context_now(context)
         ballast_feature_time = _datetime_from_any(ballast_row.get("feature_time_utc"))
         if _activation_block_reason(
@@ -635,6 +730,7 @@ class DryRunStrategyEngine:
         adjusted_features = dict(main_signal.features)
         adjusted_features["discipline_ballast_main_share"] = DISCIPLINE_BALLAST_MAIN_SHARE
         adjusted_features["discipline_ballast_symbol"] = ballast_symbol
+        adjusted_features.update(_sizing_feature_payload(main_sizing))
         adjusted_main_signal = main_signal.model_copy(
             update={
                 "target_leverage": adjusted_main_target,
@@ -672,6 +768,7 @@ class DryRunStrategyEngine:
                 "ballast_main_share": DISCIPLINE_BALLAST_MAIN_SHARE,
             }
         )
+        ballast_features.update(_sizing_feature_payload(ballast_sizing))
         ballast_signal = self._signal(
             symbol=ballast_symbol,
             now_utc=now,
@@ -805,8 +902,31 @@ class DryRunStrategyEngine:
                 "requested_notional": requested_notional,
                 "contract_size": contract_size,
                 "feature_time_utc": signal.features.get("feature_time_utc"),
+                "dynamic_exit_levels": signal.features.get("dynamic_exit_levels"),
+                "exit_level_reason": signal.features.get("exit_level_reason"),
+                "stop_multiple": signal.features.get("stop_multiple"),
+                "take_profit_multiple": signal.features.get("take_profit_multiple"),
+                "exit_level_profile": signal.features.get("exit_level_profile"),
             },
         )
+
+
+@dataclass(frozen=True)
+class _ExitLevelProfile:
+    stop_multiple: float
+    take_profit_multiple: float
+    dynamic_applied: bool
+    reason: str
+    inputs: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "stop_multiple": self.stop_multiple,
+            "take_profit_multiple": self.take_profit_multiple,
+            "dynamic_applied": self.dynamic_applied,
+            "reason": self.reason,
+            "inputs": dict(self.inputs),
+        }
 
 
 @dataclass(frozen=True)
@@ -816,6 +936,9 @@ class _SizingResult:
     entry_price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None
+    stop_multiple: float | None = None
+    take_profit_multiple: float | None = None
+    exit_level_profile: dict[str, Any] = field(default_factory=dict)
     block_reason: str | None = None
 
 
@@ -849,8 +972,12 @@ def compute_momo_score(row: Mapping[str, Any]) -> float:
 
     symbol = normalize_symbol(row.get("symbol"))
     if symbol == "BTC/USD" or symbol in FOREX_SYMBOLS:
-        return float(trend_score)
+        return float(trend_score * _asset_score_multiplier(symbol))
     return float(0.75 * trend_score + 0.25 * _as_float(row.get("relative_score")))
+
+
+def _asset_score_multiplier(symbol: str) -> float:
+    return FX_MOMENTUM_SCORE_MULTIPLIER if symbol in FOREX_SYMBOLS else 1.0
 
 
 def load_symbol_metadata_from_store(
@@ -1115,11 +1242,14 @@ def _choose_ballast_symbol(
     rows: Mapping[str, Mapping[str, Any]],
     context: StrategyContext,
     excluded_symbol: str,
+    ballast_direction: Direction,
 ) -> str | None:
-    candidates: list[tuple[float, str]] = []
+    candidates: list[tuple[int, float, str]] = []
     now = _context_now(context)
     for symbol in PNL_SPRINT_ENTRY_SYMBOLS:
         if symbol == excluded_symbol:
+            continue
+        if _empirical_direction_block_reason(symbol, ballast_direction) is not None:
             continue
         row = rows.get(symbol)
         metadata = _metadata_for(context.symbol_metadata, symbol)
@@ -1136,10 +1266,20 @@ def _choose_ballast_symbol(
         ) is not None:
             continue
         spread_bps = _as_optional_float(row.get("spread_bps"))
-        candidates.append((spread_bps if spread_bps is not None else math.inf, symbol))
+        candidates.append(
+            (
+                _ballast_symbol_priority(symbol),
+                spread_bps if spread_bps is not None else math.inf,
+                symbol,
+            )
+        )
     if not candidates:
         return None
-    return sorted(candidates)[0][1]
+    return sorted(candidates)[0][2]
+
+
+def _ballast_symbol_priority(symbol: str) -> int:
+    return BALLAST_SYMBOL_PRIORITY.get(symbol, 9)
 
 
 def chunk_order_intents_for_broker_limits(
@@ -1239,6 +1379,43 @@ def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
 
+def _empirical_direction_block_reason(symbol: str, side: Direction | str) -> str | None:
+    return EMPIRICAL_DIRECTION_BLOCK_REASONS.get((symbol, str(_enum_value(side))))
+
+
+def _context_with_candidate_alignment(
+    frame: pd.DataFrame,
+    context: StrategyContext,
+    params: StrategyParams,
+) -> StrategyContext:
+    """Attach simple same-cycle entry-alignment counts for finals sizing."""
+
+    if frame.empty:
+        return context
+    candidates: list[Direction] = []
+    for _, row in frame.iterrows():
+        data = _row_mapping(row)
+        symbol = normalize_symbol(data.get("symbol"))
+        score = compute_momo_score(data)
+        side = _candidate_side(score, params.entry_threshold)
+        if side is None or symbol not in PNL_SPRINT_ENTRY_SYMBOLS:
+            continue
+        if _empirical_direction_block_reason(symbol, side) is not None:
+            continue
+        if _entry_block_reason(data, symbol, side) is not None:
+            continue
+        candidates.append(side)
+    if not candidates:
+        return replace(context, total_entry_candidates=0, aligned_entry_candidates=0)
+    long_count = sum(1 for side in candidates if side == Direction.LONG)
+    short_count = sum(1 for side in candidates if side == Direction.SHORT)
+    return replace(
+        context,
+        total_entry_candidates=len(candidates),
+        aligned_entry_candidates=max(long_count, short_count),
+    )
+
+
 def _target_leverage(
     symbol: str,
     score: float,
@@ -1247,20 +1424,43 @@ def _target_leverage(
     rv_1h_equiv: float | None,
     params: StrategyParams,
     max_drawdown: float,
+    aligned_entry_candidates: int = 0,
 ) -> float:
     del max_drawdown
-    # Ramp position size from 0 at the entry threshold to full over the next 1.0
-    # of score, so a lower entry threshold still sizes small near the boundary.
-    score_scale = _clamp((abs(score) - params.entry_threshold) / 1.0, 0.0, 1.0)
+    if _empirical_direction_block_reason(symbol, side) is not None:
+        return 0.0
+    # Finals profile: target enough leverage to matter for ordinal return rank,
+    # but reserve near-cap sizing for strong same-cycle confirmation.
+    score_scale = _clamp(
+        (abs(score) - params.entry_threshold) / FINALS_SCORE_RAMP,
+        0.0,
+        1.0,
+    )
     vol_scale = _vol_scale(symbol, rv_1h_equiv)
     normal_cap = min(NORMAL_SYMBOL_LEVERAGE_CAP[symbol], params.max_symbol_leverage)
     hard_cap = min(HARD_SYMBOL_LEVERAGE_CAP[symbol], params.max_symbol_leverage)
-    target = normal_cap * (0.35 + 0.65 * score_scale) * vol_scale
+    target = normal_cap * (
+        FINALS_BASE_TARGET_FRACTION
+        + (FINALS_STRONG_TARGET_FRACTION - FINALS_BASE_TARGET_FRACTION) * score_scale
+    ) * vol_scale
     side_key = (symbol, _enum_value(side))
     multiplier = EMPIRICAL_DIRECTIONAL_LEVERAGE_MULTIPLIER.get(side_key, 1.0)
     floor = EMPIRICAL_DIRECTIONAL_LEVERAGE_FLOOR.get(side_key, 0.0)
     directional_cap = EMPIRICAL_DIRECTIONAL_LEVERAGE_CAP.get(side_key, hard_cap)
     target = max(target * multiplier, floor)
+    if aligned_entry_candidates < FINALS_SPRINT_MIN_ALIGNED_CANDIDATES:
+        directional_cap = min(directional_cap, FINALS_SINGLE_SIGNAL_LEVERAGE_CAP)
+    if (
+        aligned_entry_candidates >= FINALS_SPRINT_MIN_ALIGNED_CANDIDATES
+        and score_scale >= FINALS_SPRINT_SCORE_SCALE
+    ):
+        sprint_cap = min(FINALS_SPRINT_LEVERAGE_CAP, hard_cap, directional_cap, params.max_gross_leverage)
+        sprint_fraction = _clamp(
+            (score_scale - FINALS_SPRINT_SCORE_SCALE) / (1.0 - FINALS_SPRINT_SCORE_SCALE),
+            0.0,
+            1.0,
+        )
+        target = target + (sprint_cap - target) * sprint_fraction
     return min(max(target, 0.0), hard_cap, directional_cap, params.max_gross_leverage)
 
 
@@ -1287,11 +1487,21 @@ def _entry_sizing(
         return _SizingResult(block_reason="block: stop inputs unavailable")
     min_stop_distance = max(3.0 * spread, _metadata_min_stop_distance(metadata))
     side_key = (symbol, side.value)
-    stop_multiple = EMPIRICAL_STOP_MULTIPLIER.get(side_key, params.atr_stop_multiple)
-    take_profit_multiple = EMPIRICAL_TAKE_PROFIT_MULTIPLIER.get(
+    base_stop_multiple = EMPIRICAL_STOP_MULTIPLIER.get(side_key, params.atr_stop_multiple)
+    base_take_profit_multiple = EMPIRICAL_TAKE_PROFIT_MULTIPLIER.get(
         side_key,
         params.take_profit_multiple,
     )
+    exit_profile = _dynamic_exit_level_profile(
+        symbol,
+        row=row,
+        side=side,
+        params=params,
+        base_stop_multiple=base_stop_multiple,
+        base_take_profit_multiple=base_take_profit_multiple,
+    )
+    stop_multiple = exit_profile.stop_multiple
+    take_profit_multiple = exit_profile.take_profit_multiple
     stop_distance = max(stop_multiple * atr, min_stop_distance)
     take_profit_distance = max(take_profit_multiple * atr, min_stop_distance)
     target_volume = _volume_for_leverage(
@@ -1324,7 +1534,126 @@ def _entry_sizing(
         entry_price=entry_price,
         stop_loss=stop_loss,
         take_profit=take_profit,
+        stop_multiple=stop_multiple,
+        take_profit_multiple=take_profit_multiple,
+        exit_level_profile=exit_profile.as_dict(),
     )
+
+
+def _dynamic_exit_level_profile(
+    symbol: str,
+    *,
+    row: Mapping[str, Any],
+    side: Direction,
+    params: StrategyParams,
+    base_stop_multiple: float,
+    base_take_profit_multiple: float,
+) -> _ExitLevelProfile:
+    """Choose SL/TP ATR multiples from current feature state.
+
+    The dynamic profile is intentionally one-sided for the finals profile:
+    it can give winners more room through a wider take-profit, and it can
+    tighten stops in stressed conditions, but it never widens the stop-loss.
+    """
+
+    base_stop = float(base_stop_multiple)
+    base_take_profit = float(base_take_profit_multiple)
+    score = compute_momo_score(row)
+    rv_1h = _as_optional_float(row.get("rv_1h_equiv"))
+    spread_bps = _as_optional_float(row.get("spread_bps"))
+    spread_cap = SPREAD_CAP_BPS[symbol]
+    target_rv = TARGET_RV_1H[symbol]
+    score_edge = max(0.0, abs(score) - float(params.entry_threshold))
+    score_strength = _clamp(score_edge / 1.0, 0.0, 1.0)
+    slope = _as_float(row.get("ema20_slope_6_over_atr"))
+    donchian = _as_float(row.get("donchian_ensemble"))
+    volume_zscore = _as_float(row.get("volume_zscore"))
+    spread_ratio = (
+        spread_bps / spread_cap
+        if spread_bps is not None and spread_cap > 0
+        else 1.0
+    )
+    vol_ratio = (
+        rv_1h / target_rv
+        if rv_1h is not None and target_rv > 0
+        else 1.0
+    )
+    direction_sign = 1.0 if side == Direction.LONG else -1.0
+    slope_aligned = direction_sign * slope > 0.15
+    breakout_aligned = direction_sign * donchian > 0.45
+    volume_confirmed = volume_zscore >= 0.5
+    low_spread = spread_ratio <= 0.55
+    normal_volatility = vol_ratio <= 1.35
+    stressed_market = spread_ratio >= 0.80 or vol_ratio >= 1.65
+
+    inputs = {
+        "score": score,
+        "score_edge": score_edge,
+        "score_strength": score_strength,
+        "slope": slope,
+        "donchian": donchian,
+        "volume_zscore": volume_zscore,
+        "spread_bps": spread_bps,
+        "spread_cap_bps": spread_cap,
+        "spread_ratio": spread_ratio,
+        "rv_1h_equiv": rv_1h,
+        "target_rv_1h": target_rv,
+        "vol_ratio": vol_ratio,
+    }
+    if not params.dynamic_exit_levels:
+        return _ExitLevelProfile(
+            stop_multiple=base_stop,
+            take_profit_multiple=base_take_profit,
+            dynamic_applied=False,
+            reason="dynamic exit levels disabled",
+            inputs=inputs,
+        )
+
+    stop_factor = 0.90 if stressed_market else 1.0
+    take_profit_factor = 1.0
+    reason_parts: list[str] = []
+    if score_strength >= 0.20 and slope_aligned and normal_volatility:
+        take_profit_factor += 0.25 * score_strength
+        reason_parts.append("strong aligned score")
+        if breakout_aligned:
+            take_profit_factor += 0.15
+            reason_parts.append("breakout aligned")
+        if volume_confirmed:
+            take_profit_factor += 0.10
+            reason_parts.append("volume confirmed")
+        if low_spread:
+            take_profit_factor += 0.10
+            reason_parts.append("low spread")
+    if stressed_market:
+        reason_parts.append("stress tightened stop")
+        take_profit_factor = min(take_profit_factor, 1.10)
+
+    stop_multiple = max(base_stop * stop_factor, base_stop * 0.75)
+    take_profit_multiple = min(max(base_take_profit * take_profit_factor, base_take_profit), base_take_profit * 1.80)
+    dynamic_applied = (
+        abs(stop_multiple - base_stop) > EPSILON
+        or abs(take_profit_multiple - base_take_profit) > EPSILON
+    )
+    return _ExitLevelProfile(
+        stop_multiple=stop_multiple,
+        take_profit_multiple=take_profit_multiple,
+        dynamic_applied=dynamic_applied,
+        reason=", ".join(reason_parts) if dynamic_applied else "base exit levels retained",
+        inputs=inputs,
+    )
+
+
+def _sizing_feature_payload(sizing: _SizingResult) -> dict[str, Any]:
+    if not sizing.exit_level_profile:
+        return {}
+    profile = dict(sizing.exit_level_profile)
+    return {
+        "dynamic_exit_levels": bool(profile.get("dynamic_applied")),
+        "exit_level_reason": profile.get("reason"),
+        "stop_multiple": sizing.stop_multiple,
+        "take_profit_multiple": sizing.take_profit_multiple,
+        "exit_level_profile": profile,
+    }
 
 
 def _volume_for_leverage(
@@ -1512,6 +1841,7 @@ def _feature_payload(
 ) -> dict[str, Any]:
     payload = {str(key): _json_safe(value) for key, value in row.items()}
     payload["strategy_score"] = score
+    payload["asset_score_multiplier"] = _asset_score_multiplier(normalize_symbol(row.get("symbol")))
     payload["entry_threshold"] = float(entry_threshold)
     payload["exit_threshold"] = float(exit_threshold)
     return payload

@@ -206,7 +206,7 @@ class ExecutionEngine:
             filled_volume=0.0,
             requested_price=intent.requested_price,
             message=DRY_RUN_RESULT_MESSAGE,
-            request=request,
+            request=_execution_request_payload(request, intent),
             result=result_payload,
         )
         if store is not None:
@@ -237,7 +237,7 @@ class ExecutionEngine:
                 requested_volume=intent.requested_volume,
                 requested_price=intent.requested_price,
                 message=f"live order rejected before order_check: {prepared.rejection_reason}",
-                request={},
+                request=_execution_request_payload({}, intent),
                 result={
                     "sent_to_mt5": False,
                     "order_check_called": False,
@@ -299,7 +299,7 @@ class ExecutionEngine:
                 requested_price=intent.requested_price,
                 retcode=_retcode(check_result),
                 message="live order_check rejected request; order_send was not called",
-                request=request,
+                request=_execution_request_payload(request, intent),
                 result={
                     "sent_to_mt5": False,
                     "order_check_called": True,
@@ -347,7 +347,7 @@ class ExecutionEngine:
             mt5_deal_ticket=_as_optional_int(send_payload.get("deal")),
             retcode=_retcode(send_result),
             message=str(send_payload.get("comment") or "guarded live order_send result"),
-            request=request,
+            request=_execution_request_payload(request, intent),
             result={
                 "sent_to_mt5": True,
                 "order_check_called": True,
@@ -442,6 +442,15 @@ def build_mt5_order_request(
     if intent.take_profit is not None:
         request["tp"] = float(intent.take_profit)
     return request
+
+
+def _execution_request_payload(request: Mapping[str, Any], intent: OrderIntent) -> dict[str, Any]:
+    """Return the stored request payload without changing the MT5 request sent."""
+
+    payload = dict(request)
+    if intent.metadata:
+        payload["intent_metadata"] = _json_safe(intent.metadata)
+    return payload
 
 
 def _prepare_intent_for_live_execution(
